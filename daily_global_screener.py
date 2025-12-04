@@ -7,8 +7,6 @@ import os
 # ================================
 # ✅ KONFIGURATION
 # ================================
-START_DEPOT = 30000
-RISK_PER_TRADE = 0.005   # 0,5 %
 START = "2020-01-01"
 END = datetime.date.today().isoformat()
 
@@ -16,64 +14,85 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # ================================
-# ✅ DEPOT (VIRTUELL)
-# ================================
-depot_value = START_DEPOT
-positions = {}  # Merkt aktive Trades je Ticker
-
-# ================================
-# ✅ UNIVERSE: NASDAQ TOP 500 + MDAX + SDAX
+# ✅ UNIVERSE LOADER
 # ================================
 def load_universe():
     tickers = set()
 
-    # --- NASDAQ TOP 500 ---
+    # ----------------------------
+    # ✅ NASDAQ TOP 500
+    # ----------------------------
     try:
+        print("Lade Nasdaq Top 500...")
         url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=500"
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        data = requests.get(url, headers=headers).json()
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+        data = requests.get(url, headers=headers, timeout=20).json()
         rows = data["data"]["table"]["rows"]
 
         for r in rows:
-            if r["symbol"]:
+            if r.get("symbol"):
                 tickers.add(r["symbol"])
 
-    except:
+        print("✅ Nasdaq geladen:", len(rows))
+
+    except Exception as e:
+        print("❌ Nasdaq Fehler – Fallback aktiv:", e)
         tickers |= {
             "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","TSLA","AVGO",
             "ASML","AMD","NFLX","PLTR","COST","ADBE","ADI"
         }
 
-    # --- MDAX ---
+    # ----------------------------
+    # ✅ MDAX (CSV)
+    # ----------------------------
     try:
-        mdax = pd.read_html("https://de.wikipedia.org/wiki/MDAX")[0]["Ticker"].dropna()
-        tickers |= {f"{t}.DE" for t in mdax}
-    except:
-        pass
+        mdax = pd.read_csv("mdax.csv")["Ticker"].dropna()
+        tickers |= set(mdax.astype(str))
+        print("✅ MDAX geladen:", len(mdax))
+    except Exception as e:
+        print("❌ MDAX CSV nicht gefunden:", e)
 
-    # --- SDAX ---
+    # ----------------------------
+    # ✅ SDAX (CSV)
+    # ----------------------------
     try:
-        sdax = pd.read_html("https://de.wikipedia.org/wiki/SDAX")[0]["Ticker"].dropna()
-        tickers |= {f"{t}.DE" for t in sdax}
-    except:
-        pass
+        sdax = pd.read_csv("sdax.csv")["Ticker"].dropna()
+        tickers |= set(sdax.astype(str))
+        print("✅ SDAX geladen:", len(sdax))
+    except Exception as e:
+        print("❌ SDAX CSV nicht gefunden:", e)
 
-    return sorted(list(tickers))
+    tickers = sorted(list(tickers))
+
+    print("====================================")
+    print("✅ GESAMT-TICKER:", len(tickers))
+    print("====================================")
+
+    return tickers
 
 tickers = load_universe()
-scanned_count = len(tickers)
+checked_count = len(tickers)
 
 # ================================
-# ✅ FEAR & GREED INDEX
+# ✅ FEAR & GREED INDEX (STABIL)
 # ================================
 def get_fear_greed():
     try:
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        data = requests.get(url).json()
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        data = resp.json()
+
         latest = list(data["fear_and_greed_historical"].values())[-1]
-        return f"{latest['score']} ({latest['rating']})"
+        score = latest["score"]
+        rating = latest["rating"]
+
+        return f"{score} ({rating})"
     except:
-        return "Nicht verfügbar"
+        return "API blockiert (CNN)"
 
 fear_greed = get_fear_greed()
 
@@ -82,7 +101,10 @@ fear_greed = get_fear_greed()
 # ================================
 try:
     ndx = yf.download("^NDX", period="5d", progress=False)
-    ndx_pct = float((ndx["Close"].iloc[-1] - ndx["Close"].iloc[-2]) / ndx["Close"].iloc[-2] * 100)
+    ndx_pct = float(
+        (ndx["Close"].iloc[-1] - ndx["Close"].iloc[-2])
+        / ndx["Close"].iloc[-2] * 100
+    )
 except:
     ndx_pct = 0.0
 
@@ -90,6 +112,7 @@ except:
 # ✅ SIGNAL LOGIK
 # ================================
 signals = []
+positions = {}
 
 def in_position(ticker):
     return positions.get(ticker, False)
@@ -110,7 +133,9 @@ for TICKER in tickers:
 
         entry = (
             yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
-            and not (day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"])
+            and not (
+                day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"]
+            )
         )
 
         exit_sig = (
@@ -136,7 +161,7 @@ for TICKER in tickers:
             positions[TICKER] = False
 
     except Exception as e:
-        continue
+        print("Fehler bei:", TICKER, e)
 
 signals_df = pd.DataFrame(signals, columns=["Ticker", "Signal"])
 
@@ -149,7 +174,7 @@ tp2_list = signals_df[signals_df["Signal"] == "TP2"]["Ticker"].tolist()
 exit_list = signals_df[signals_df["Signal"] == "EXIT"]["Ticker"].tolist()
 
 text = f"""📡 *DAILY GLOBAL SCREENER*
-Ich habe heute ✅ *{scanned_count} Aktien* für dich gescannt
+Ich habe heute ✅ *{checked_count} Aktien* für dich gescannt
 
 📈 *ENTRY Signale:*
 {chr(10).join(entry_list) if entry_list else "Keine"}
@@ -185,6 +210,6 @@ signals_df.to_excel("daily_signals.xlsx", index=False)
 
 print("====================================")
 print("GLOBAL SCREENER FERTIG")
-print("Gescannt:", scanned_count)
+print("Gescannt:", checked_count)
 print("Signale:", len(signals_df))
 print("====================================")
