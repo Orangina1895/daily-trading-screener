@@ -35,47 +35,76 @@ def in_position(ticker):
     return positions.get(ticker, False)
 
 # ================================
-# ✅ SIGNAL LOGIK
+# ✅ SIGNAL LOGIK (FINAL & KORREKT)
 # ================================
 signals = []
 
 for TICKER in tickers:
     try:
-        df = yf.download(TICKER, start=START, end=END, progress=False)
+        df = yf.download(TICKER, start=START, end=END, progress=False, auto_adjust=True)
 
         if df.empty or len(df) < 250:
             continue
 
+        # ✅ Indikatoren
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["EMA200"] = df["Close"].ewm(span=200).mean()
 
+        # ✅ WICHTIG: Serien synchronisieren (sonst FEHLER)
+        df = df.dropna()
+
+        if len(df) < 5:
+            continue
+
         yesterday = df.iloc[-2]
         day_before = df.iloc[-3]
 
-        entry = (
+        # ================================
+        # ✅ ENTRY (nur wenn gestern NEU)
+        # ================================
+        entry_today = (
             yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
-            and not (day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"])
         )
 
+        entry_yesterday = (
+            day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"]
+        )
+
+        entry = entry_today and not entry_yesterday
+
+        # ================================
+        # ✅ EXIT (nur wenn vorher ENTRY)
+        # ================================
         exit_sig = (
             yesterday["Close"] < yesterday["EMA200"]
             and day_before["Close"] >= day_before["EMA200"]
         )
 
-        tp1 = yesterday["Close"] > 1.1 * day_before["Close"]
-        tp2 = yesterday["Close"] > 1.2 * day_before["Close"]
+        # ================================
+        # ✅ TP1 / TP2 (nur wenn Position offen)
+        # ================================
+        tp1 = yesterday["Close"] >= 1.10 * day_before["Close"]
+        tp2 = yesterday["Close"] >= 1.20 * day_before["Close"]
 
-        if entry and not in_position(TICKER):
+        # ================================
+        # ✅ SIGNAL-AUSWAHL (saubere Reihenfolge)
+        # ================================
+
+        # ✅ ENTRY darf NIEMALS blockiert werden
+        if entry:
             signals.append([TICKER, "ENTRY"])
             positions[TICKER] = True
 
+        # ✅ TP2 nur wenn Position existiert
         elif tp2 and in_position(TICKER):
             signals.append([TICKER, "TP2"])
 
+        # ✅ TP1 nur wenn Position existiert
         elif tp1 and in_position(TICKER):
             signals.append([TICKER, "TP1"])
 
+        # ✅ EXIT nur wenn Position existiert
         elif exit_sig and in_position(TICKER):
             signals.append([TICKER, "EXIT"])
             positions[TICKER] = False
@@ -83,7 +112,9 @@ for TICKER in tickers:
     except Exception as e:
         print("Fehler bei:", TICKER, e)
 
+
 signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
+
 
 # ================================
 # ✅ EXCEL EXPORT
@@ -130,4 +161,5 @@ print("GLOBAL SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
 
