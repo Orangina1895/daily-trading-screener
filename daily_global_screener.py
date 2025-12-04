@@ -1,118 +1,101 @@
-import pandas as pd
 import yfinance as yf
+import pandas as pd
 import requests
 import datetime
 import os
 
 # ================================
-# ✅ KONFIGURATION
+# ✅ KONFIG
 # ================================
 START = "2020-01-01"
-END = datetime.date.today().isoformat()
+END = datetime.datetime.today().strftime("%Y-%m-%d")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# ================================
-# ✅ UNIVERSE LOADER
-# ================================
-def load_universe():
-    tickers = set()
-
-    # ----------------------------
-    # ✅ NASDAQ TOP 500
-    # ----------------------------
-    try:
-        print("Lade Nasdaq Top 500...")
-        url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=500"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
-        data = requests.get(url, headers=headers, timeout=20).json()
-        rows = data["data"]["table"]["rows"]
-
-        for r in rows:
-            if r.get("symbol"):
-                tickers.add(r["symbol"])
-
-        print("✅ Nasdaq geladen:", len(rows))
-
-    except Exception as e:
-        print("❌ Nasdaq Fehler – Fallback aktiv:", e)
-        tickers |= {
-            "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","TSLA","AVGO",
-            "ASML","AMD","NFLX","PLTR","COST","ADBE","ADI"
-        }
-
-    # ----------------------------
-    # ✅ MDAX (CSV)
-    # ----------------------------
-    try:
-        mdax = pd.read_csv("mdax.csv")["Ticker"].dropna()
-        tickers |= set(mdax.astype(str))
-        print("✅ MDAX geladen:", len(mdax))
-    except Exception as e:
-        print("❌ MDAX CSV nicht gefunden:", e)
-
-    # ----------------------------
-    # ✅ SDAX (CSV)
-    # ----------------------------
-    try:
-        sdax = pd.read_csv("sdax.csv")["Ticker"].dropna()
-        tickers |= set(sdax.astype(str))
-        print("✅ SDAX geladen:", len(sdax))
-    except Exception as e:
-        print("❌ SDAX CSV nicht gefunden:", e)
-
-    tickers = sorted(list(tickers))
-
-    print("====================================")
-    print("✅ GESAMT-TICKER:", len(tickers))
-    print("====================================")
-
-    return tickers
-
-tickers = load_universe()
-checked_count = len(tickers)
+POSITIONS_FILE = "positions.csv"
 
 # ================================
-# ✅ FEAR & GREED INDEX (STABIL)
+# ✅ FEAR & GREED
 # ================================
 def get_fear_greed():
     try:
-        url = "https://api.alternative.me/fng/?limit=1"
-        data = requests.get(url, timeout=10).json()
-
-        value = data["data"][0]["value"]
-        classification = data["data"][0]["value_classification"]
-
-        return f"{value} ({classification})"
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        return str(int(data["fear_and_greed"]["score"]))
     except:
-        return "Nicht verfügbar"
+        return "API blockiert (CNN)"
 
 # ================================
-# ✅ NASDAQ-100 PERFORMANCE (GESTERN)
+# ✅ NASDAQ-100 PERFORMANCE
 # ================================
-try:
-    ndx = yf.download("^NDX", period="5d", progress=False)
-    ndx_pct = float(
-        (ndx["Close"].iloc[-1] - ndx["Close"].iloc[-2])
-        / ndx["Close"].iloc[-2] * 100
-    )
-except:
-    ndx_pct = 0.0
+def get_nasdaq_perf():
+    try:
+        df = yf.download("^NDX", period="5d", progress=False)
+        if len(df) < 2:
+            return 0.0
+        prev = df.iloc[-2]["Close"]
+        last = df.iloc[-1]["Close"]
+        return ((last - prev) / prev) * 100
+    except:
+        return 0.0
 
 # ================================
-# ✅ SIGNAL LOGIK
+# ✅ TICKER LADEN (CSV)
 # ================================
-signals = []
-positions = {}
+def load_tickers():
+    try:
+        nasdaq = pd.read_csv("nasdaq500.csv")["Ticker"].dropna().tolist()
+        mdax = pd.read_csv("mdax.csv")["Ticker"].dropna().tolist()
+        sdax = pd.read_csv("sdax.csv")["Ticker"].dropna().tolist()
+        return list(set(nasdaq + mdax + sdax))
+    except:
+        print("⚠️ CSV-Dateien fehlen – Fallback aktiv")
+        return ["NVDA", "AAPL", "MSFT", "AMZN", "META", "TSLA", "PLTR", "AMD", "ADI", "ASML"]
+
+# ================================
+# ✅ POSITIONSVERWALTUNG
+# ================================
+def load_positions():
+    try:
+        df = pd.read_csv(POSITIONS_FILE)
+        return dict(zip(df["Ticker"], df["InPosition"]))
+    except:
+        return {}
+
+def save_positions(positions):
+    df = pd.DataFrame(list(positions.items()), columns=["Ticker", "InPosition"])
+    df.to_csv(POSITIONS_FILE, index=False)
 
 def in_position(ticker):
     return positions.get(ticker, False)
 
+# ================================
+# ✅ TELEGRAM
+# ================================
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    requests.post(url, data=payload)
+
+# ================================
+# ✅ HAUPTPROGRAMM
+# ================================
+tickers = load_tickers()
+positions = load_positions()
+
+signals = []
+scanned = 0
+
+print("====================================")
+print("GLOBAL-SCREENER START")
+print("Datum:", END)
+print("Anzahl Ticker:", len(tickers))
+print("====================================")
+
 for TICKER in tickers:
+    scanned += 1
     try:
         df = yf.download(TICKER, start=START, end=END, progress=False)
 
@@ -124,22 +107,20 @@ for TICKER in tickers:
         df["EMA200"] = df["Close"].ewm(span=200).mean()
 
         yesterday = df.iloc[-2]
-        day_before = df.iloc[-3]
+        prev = df.iloc[-3]
 
         entry = (
             yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
-            and not (
-                day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"]
-            )
+            and not (prev["EMA20"] > prev["EMA50"] > prev["EMA200"])
         )
 
         exit_sig = (
             yesterday["Close"] < yesterday["EMA200"]
-            and day_before["Close"] >= day_before["EMA200"]
+            and prev["Close"] >= prev["EMA200"]
         )
 
-        tp1 = yesterday["Close"] > 1.1 * day_before["Close"]
-        tp2 = yesterday["Close"] > 1.2 * day_before["Close"]
+        tp1 = yesterday["Close"] >= 1.10 * prev["Close"]
+        tp2 = yesterday["Close"] >= 1.20 * prev["Close"]
 
         if entry and not in_position(TICKER):
             signals.append([TICKER, "ENTRY"])
@@ -158,54 +139,38 @@ for TICKER in tickers:
     except Exception as e:
         print("Fehler bei:", TICKER, e)
 
+# ================================
+# ✅ SIGNALAUSWERTUNG
+# ================================
 signals_df = pd.DataFrame(signals, columns=["Ticker", "Signal"])
 
-# ================================
-# ✅ TELEGRAM FORMATIERUNG
-# ================================
 entry_list = signals_df[signals_df["Signal"] == "ENTRY"]["Ticker"].tolist()
 tp1_list = signals_df[signals_df["Signal"] == "TP1"]["Ticker"].tolist()
 tp2_list = signals_df[signals_df["Signal"] == "TP2"]["Ticker"].tolist()
 exit_list = signals_df[signals_df["Signal"] == "EXIT"]["Ticker"].tolist()
 
-text = f"""📡 *DAILY GLOBAL SCREENER*
-Ich habe heute ✅ *{checked_count} Aktien* für dich gescannt
-
-📈 *ENTRY Signale:*
-{chr(10).join(entry_list) if entry_list else "Keine"}
-
-📊 *TP1:*
-{chr(10).join(tp1_list) if tp1_list else "Keine"}
-
-🚀 *TP2:*
-{chr(10).join(tp2_list) if tp2_list else "Keine"}
-
-📉 *EXIT Signale:*
-{chr(10).join(exit_list) if exit_list else "Keine"}
-
-😱 *Fear & Greed:* {fear_greed}
-📉 *Nasdaq-100 gestern:* {ndx_pct:+.2f} %
-"""
+save_positions(positions)
 
 # ================================
-# ✅ TELEGRAM SENDEN
+# ✅ ZUSATZDATEN
 # ================================
-url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-payload = {
-    "chat_id": CHAT_ID,
-    "text": text,
-    "parse_mode": "Markdown"
-}
-requests.post(url, data=payload)
+fear_greed = get_fear_greed()
+nasdaq_perf = get_nasdaq_perf()
 
 # ================================
-# ✅ EXCEL EXPORT
+# ✅ TELEGRAM TEXT
 # ================================
-signals_df.to_excel("daily_signals.xlsx", index=False)
+text = "📡 DAILY GLOBAL SCREENER\n"
+text += f"Ich habe heute ✅ {scanned} Aktien für dich gescannt\n\n"
 
-print("====================================")
-print("GLOBAL SCREENER FERTIG")
-print("Gescannt:", checked_count)
-print("Signale:", len(signals_df))
-print("====================================")
+text += "📈 ENTRY Signale:\n" + ("\n".join(entry_list) if entry_list else "Keine") + "\n\n"
+text += "📊 TP1:\n" + ("\n".join(tp1_list) if tp1_list else "Keine") + "\n\n"
+text += "🚀 TP2:\n" + ("\n".join(tp2_list) if tp2_list else "Keine") + "\n\n"
+text += "📉 EXIT Signale:\n" + ("\n".join(exit_list) if exit_list else "Keine") + "\n\n"
 
+text += f"😱 Fear & Greed: {fear_greed}\n"
+text += f"📉 Nasdaq-100 gestern: {nasdaq_perf:+.2f} %"
+
+send_telegram(text)
+
+print("✅ Telegram gesendet")
