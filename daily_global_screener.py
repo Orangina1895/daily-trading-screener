@@ -33,10 +33,11 @@ def get_fear_greed():
 def get_nasdaq_perf():
     try:
         df = yf.download("^NDX", period="5d", progress=False)
-        if len(df) < 2:
+        if df.empty or len(df) < 2:
             return 0.0
-        prev = df.iloc[-2]["Close"]
-        last = df.iloc[-1]["Close"]
+
+        prev = float(df["Close"].iloc[-2])
+        last = float(df["Close"].iloc[-1])
         return ((last - prev) / prev) * 100
     except:
         return 0.0
@@ -109,18 +110,25 @@ for TICKER in tickers:
         yesterday = df.iloc[-2]
         prev = df.iloc[-3]
 
+        ema20_y = float(yesterday["EMA20"])
+        ema50_y = float(yesterday["EMA50"])
+        ema200_y = float(yesterday["EMA200"])
+
+        ema20_p = float(prev["EMA20"])
+        ema50_p = float(prev["EMA50"])
+        ema200_p = float(prev["EMA200"])
+
+        close_y = float(yesterday["Close"])
+        close_p = float(prev["Close"])
+
         entry = (
-            yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
-            and not (prev["EMA20"] > prev["EMA50"] > prev["EMA200"])
+            ema20_y > ema50_y > ema200_y
+            and not (ema20_p > ema50_p > ema200_p)
         )
 
-        exit_sig = (
-            yesterday["Close"] < yesterday["EMA200"]
-            and prev["Close"] >= prev["EMA200"]
-        )
-
-        tp1 = yesterday["Close"] >= 1.10 * prev["Close"]
-        tp2 = yesterday["Close"] >= 1.20 * prev["Close"]
+        exit_sig = close_y < ema200_y and close_p >= ema200_p
+        tp1 = close_y >= 1.10 * close_p
+        tp2 = close_y >= 1.20 * close_p
 
         if entry and not in_position(TICKER):
             signals.append([TICKER, "ENTRY"])
@@ -155,7 +163,7 @@ save_positions(positions)
 # ✅ ZUSATZDATEN
 # ================================
 fear_greed = get_fear_greed()
-nasdaq_perf = get_nasdaq_perf()
+nasdaq_perf = float(get_nasdaq_perf())
 
 # ================================
 # ✅ TELEGRAM TEXT
