@@ -1,163 +1,131 @@
 import yfinance as yf
 import pandas as pd
 import requests
-from datetime import datetime
-
-# ================================
-# 🔐 TELEGRAM DATEN
-# ================================
 import os
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-# ================================
-# PARAMETER
-# ================================
-START = "1990-01-01"
-LEVERAGE = 3
+from datetime import datetime, timedelta
 
 # ================================
-# ✅ NASDAQ COMPOSITE AUTOMATISCH LADEN
+# 🔐 TELEGRAM KONFIG
 # ================================
-print("Lade Nasdaq Composite Liste...")
-
-import requests
-import io
-
-print("Lade Nasdaq-Aktien über Nasdaq-API und filtere Top 500 nach MarketCap...")
-
-nasdaq_url = "https://api.nasdaq.com/api/screener/stocks?exchange=nasdaq&download=true"
-
-headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-    "Referer": "https://www.nasdaq.com"
-}
-
-r = requests.get(nasdaq_url, headers=headers)
-r.raise_for_status()
-
-data = r.json()
-
-nasdaq_df = pd.DataFrame(data["data"]["rows"])
-
-# ✅ Nur Spalten mit Symbol + MarketCap
-nasdaq_df = nasdaq_df[["symbol", "marketCap"]]
-
-# ✅ ALLE leeren, None, "-" etc. entfernen
-nasdaq_df["marketCap"] = (
-    nasdaq_df["marketCap"]
-    .astype(str)
-    .str.replace(",", "", regex=False)
-    .str.replace("-", "", regex=False)
-)
-
-nasdaq_df = nasdaq_df[nasdaq_df["marketCap"].str.strip() != ""]
-
-# ✅ Jetzt erst sicher zu float konvertieren
-nasdaq_df["marketCap"] = nasdaq_df["marketCap"].astype(float)
-
-# ✅ Nur positive MarketCaps
-nasdaq_df = nasdaq_df[nasdaq_df["marketCap"] > 0]
-
-# ✅ Nach Größe sortieren
-nasdaq_df = nasdaq_df.sort_values("marketCap", ascending=False)
-
-# ✅ Top 500
-NASDAQ_TOP500 = nasdaq_df["symbol"].head(500).tolist()
-
-print("Anzahl Nasdaq Top-500-Aktien:", len(NASDAQ_TOP500))
-
-
+TELEGRAM_TOKEN = "DEIN_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "DEINE_CHAT_ID"
 
 # ================================
-# ✅ MDAX & SDAX FEST
+# 📁 STATUS FILE
 # ================================
-MDAX = [
-"AIXA.DE","EVK.DE","LEG.DE","RHM.DE","SOW.DE","SZU.DE","PUM.DE",
-"JEN.DE","KRN.DE","WCH.DE","HFG.DE","MTX.DE","G1A.DE"
-]
+STATUS_FILE = "trade_status.csv"
 
-SDAX = [
-"S92.DE","TTK.DE","GFT.DE","O2D.DE","DEQ.DE","SAX.DE","LXS.DE",
-"DER.DE","NOR.DE","YOU.DE"
-]
+if os.path.exists(STATUS_FILE):
+    status_df = pd.read_csv(STATUS_FILE)
+else:
+    status_df = pd.DataFrame(columns=["Ticker", "InPosition"])
 
-UNIVERSE = NASDAQ_TOP500 + MDAX + SDAX
+def in_position(ticker):
+    row = status_df[status_df["Ticker"] == ticker]
+    if row.empty:
+        return False
+    return row.iloc[0]["InPosition"] == 1
 
+# ================================
+# 📊 TICKER LISTE (NASDAQ TOP 500)
+# ================================
+tickers = pd.read_csv("nasdaq_top_500.csv")["Ticker"].dropna().tolist()
+
+# ================================
+# 🗓️ DATUM
+# ================================
+END = datetime.today() - timedelta(days=1)
+START = END - timedelta(days=400)
 
 signals = []
 
 # ================================
-# ✅ SCREENER
+# 🔁 SCREENER LOOP
 # ================================
-for TICKER in UNIVERSE:
+for TICKER in tickers:
 
     try:
-        df = yf.download(TICKER, start=START, progress=False)
-    except:
-        continue
+        df = yf.download(TICKER, start=START, end=END, progress=False)
 
-    if df.empty or len(df) < 250:
-        continue
+        if len(df) < 200:
+            continue
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        df["EMA50"] = df["Close"].ewm(span=50).mean()
+        df["EMA200"] = df["Close"].ewm(span=200).mean()
 
-    df = df[["Close"]].dropna()
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    df["EMA100"] = df["Close"].ewm(span=100, adjust=False).mean()
-    df["SMA20"]  = df["Close"].rolling(20).mean()
-    df["SMA50"]  = df["Close"].rolling(50).mean()
-    df["SMA120"] = df["Close"].rolling(120).mean()
-    df["SMA200"] = df["Close"].rolling(200).mean()
+        close = last["Close"]
+        ema50 = last["EMA50"]
+        ema200 = last["EMA200"]
 
-    if len(df) < 210:
-        continue
+        # ================================
+        # ✅ ENTRY
+        # ================================
+        long_signal = close > ema50 and ema50 > ema200 and not in_position(TICKER)
 
-    y = df.iloc[-2]
-    p = df.iloc[-3]
+        if long_signal:
+            signals.append({
+                "Ticker": TICKER,
+                "Neues Signal": "ENTRY"
+            })
 
-    # ✅ ENTRY (nur neu!)
-    entry_y = y["SMA20"] > y["SMA50"] > y["SMA120"] > y["SMA200"] and y["Close"] > y["EMA200"]
-    entry_p = p["SMA20"] > p["SMA50"] > p["SMA120"] > p["SMA200"] and p["Close"] > p["EMA200"]
+            if TICKER in status_df["Ticker"].values:
+                status_df.loc[status_df["Ticker"] == TICKER, "InPosition"] = 1
+            else:
+                status_df = pd.concat([status_df, pd.DataFrame([{
+                    "Ticker": TICKER,
+                    "InPosition": 1
+                }])])
 
-    if entry_y and not entry_p:
-        signals.append([TICKER, "ENTRY"])
-        continue
+        # ================================
+        # ✅ EXIT (NUR WENN LONG AKTIV)
+        # ================================
+        exit_signal = close < ema200 and in_position(TICKER)
 
-    # ✅ TP / EXIT (nur neu)
-    entry_price = df["Close"].iloc[-60]
+        if exit_signal:
+            signals.append({
+                "Ticker": TICKER,
+                "Neues Signal": "EXIT"
+            })
 
-    perf_y = ((df["Close"].iloc[-2] / entry_price) - 1) * 100 * LEVERAGE
-    perf_p = ((df["Close"].iloc[-3] / entry_price) - 1) * 100 * LEVERAGE
+            status_df.loc[status_df["Ticker"] == TICKER, "InPosition"] = 0
 
-    if perf_y >= 1000 and perf_p < 1000:
-        signals.append([TICKER, "TP1_1000%"])
-        continue
+        # ================================
+        # ✅ TP1 / TP2 (OPTIONAL – NUR BEI AKTIVEM TRADE)
+        # ================================
+        if in_position(TICKER):
 
-    if perf_y >= 2000 and perf_p < 2000:
-        signals.append([TICKER, "TP2_2000%"])
-        continue
+            tp1 = close > df["Close"].rolling(50).max().iloc[-2]
+            tp2 = close > df["Close"].rolling(100).max().iloc[-2]
 
-    exit_y = y["Close"] < y["EMA100"] * 0.97
-    exit_p = p["Close"] < p["EMA100"] * 0.97
+            if tp1:
+                signals.append({
+                    "Ticker": TICKER,
+                    "Neues Signal": "TP1"
+                })
 
-    if exit_y and not exit_p:
-        signals.append([TICKER, "EXIT"])
-        continue
+            if tp2:
+                signals.append({
+                    "Ticker": TICKER,
+                    "Neues Signal": "TP2"
+                })
+
+    except Exception as e:
+        print("Fehler bei:", TICKER, e)
 
 # ================================
-# ✅ EXCEL
+# ✅ SPEICHERN
 # ================================
-signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
-date_str = datetime.now().strftime("%Y-%m-%d")
-filename = f"daily_signals_{date_str}.xlsx"
+filename = "daily_signals.xlsx"
+signals_df = pd.DataFrame(signals)
+
 signals_df.to_excel(filename, index=False)
+status_df.to_csv(STATUS_FILE, index=False)
 
 # ================================
-# ✅ TELEGRAM
+# ✅ TELEGRAM SENDEN
 # ================================
 if len(signals_df) > 0:
     text = "📈 *NEUE TRADING-SIGNALE (GESTERN)*\n\n"
@@ -172,6 +140,7 @@ payload = {
     "text": text,
     "parse_mode": "Markdown"
 }
+
 requests.post(url, data=payload)
 
 print("====================================")
@@ -179,7 +148,3 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
-
-
-
-
