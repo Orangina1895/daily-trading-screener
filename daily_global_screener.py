@@ -1,200 +1,156 @@
-import os
-import json
-import datetime as dt
-import pandas as pd
 import yfinance as yf
+import pandas as pd
 import requests
+import os
+from datetime import datetime, timedelta
 
 # ================================
-# ✅ EINSTELLUNGEN
+# ✅ CONFIG
 # ================================
-DATA_PERIOD = "300d"
+START = "2022-01-01"
+END = datetime.now().strftime("%Y-%m-%d")
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-POSITIONS_FILE = "positions.json"
+
+POSITIONS_FILE = "positions.csv"
 
 # ================================
-# ✅ FALLBACK TICKER (STABIL)
+# ✅ NASDAQ TOP 500 (DYNAMISCH + FALLBACK)
 # ================================
-def load_tickers():
-    return [
-        "NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","META",
-        "TSLA","AVGO","ASML","NFLX","PLTR","COST","AMD","ADBE","ADI"
-    ]
-
-# ================================
-# ✅ POSITIONEN LADEN / SPEICHERN
-# ================================
-def load_positions(tickers):
-    if os.path.exists(POSITIONS_FILE):
-        with open(POSITIONS_FILE, "r") as f:
-            positions = json.load(f)
-    else:
-        positions = {}
-
-    for t in tickers:
-        if t not in positions:
-            positions[t] = {
-                "in_position": False,
-                "tp1_hit": False,
-                "tp2_hit": False
-            }
-    return positions
-
-
-def save_positions(positions):
-    with open(POSITIONS_FILE, "w") as f:
-        json.dump(positions, f, indent=2)
-
-# ================================
-# ✅ FEAR & GREED
-# ================================
-def get_fear_greed():
+def load_nasdaq_top_500():
     try:
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        print("Lade Nasdaq Top 500 dynamisch...")
+        url = "https://www.nasdaq.com/api/screener/stocks?tableonly=true&limit=500"
         data = requests.get(url, timeout=10).json()
-        return f"{data['fear_and_greed']['score']} – {data['fear_and_greed']['rating']}"
+        tickers = [row["symbol"] for row in data["rows"]]
+        print("Nasdaq Top 500 geladen:", len(tickers))
+        return tickers
     except:
-        return "Nicht verfügbar"
+        print("Dynamischer Nasdaq-Download fehlgeschlagen – Fallback aktiv.")
+        return ["NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","META","TSLA","AVGO",
+                "ASML","NFLX","PLTR","COST","AMD","ADBE","ADI"]
+
+tickers = load_nasdaq_top_500()
+
+# ================================
+# ✅ POSITIONEN LADEN
+# ================================
+if os.path.exists(POSITIONS_FILE):
+    positions = pd.read_csv(POSITIONS_FILE, index_col=0)["in_position"].to_dict()
+else:
+    positions = {}
+
+def in_position(ticker):
+    return positions.get(ticker, False)
+
+def save_positions():
+    pd.DataFrame.from_dict(positions, orient="index", columns=["in_position"]).to_csv(POSITIONS_FILE)
+
+# ================================
+# ✅ SIGNAL LOGIK
+# ================================
+signals = []
+
+for TICKER in tickers:
+    try:
+        df = yf.download(TICKER, start=START, end=END, progress=False)
+
+        if df.empty or len(df) < 250:
+            continue
+
+        df["EMA20"] = df["Close"].ewm(span=20).mean()
+        df["EMA50"] = df["Close"].ewm(span=50).mean()
+        df["EMA200"] = df["Close"].ewm(span=200).mean()
+
+        yesterday = df.iloc[-2]
+        day_before = df.iloc[-3]
+
+        entry = (
+            yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
+            and not (day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"])
+        )
+
+        exit_sig = (
+            yesterday["Close"] < yesterday["EMA200"]
+            and day_before["Close"] >= day_before["EMA200"]
+        )
+
+        tp1 = yesterday["Close"] > 1.10 * day_before["Close"]
+        tp2 = yesterday["Close"] > 1.20 * day_before["Close"]
+
+        if entry and not in_position(TICKER):
+            signals.append([TICKER, "ENTRY"])
+            positions[TICKER] = True
+
+        elif tp2 and in_position(TICKER):
+            signals.append([TICKER, "TP2"])
+
+        elif tp1 and in_position(TICKER):
+            signals.append([TICKER, "TP1"])
+
+        elif exit_sig and in_position(TICKER):
+            signals.append([TICKER, "EXIT"])
+            positions[TICKER] = False
+
+    except Exception as e:
+        print("Fehler bei:", TICKER, e)
+
+save_positions()
+
+signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
+
+# ================================
+# ✅ FEAR & GREED INDEX
+# ================================
+try:
+    fg = requests.get("https://api.alternative.me/fng/").json()
+    fear_greed_value = fg["data"][0]["value"]
+except:
+    fear_greed_value = None
 
 # ================================
 # ✅ NASDAQ-100 PERFORMANCE
 # ================================
-def get_nasdaq100_performance():
-    try:
-        df = yf.download("^NDX", period="5d", progress=False, auto_adjust=True)
+try:
+    ndx = yf.download("^NDX", period="5d", progress=False)
+    nasdaq_perf = (ndx["Close"].iloc[-1] / ndx["Close"].iloc[-2] - 1) * 100
+except:
+    nasdaq_perf = 0.0
 
-        if len(df) < 2:
-            return None
+# ================================
+# ✅ TELEGRAM FORMAT
+# ================================
+entry_list = signals_df[signals_df["Neues Signal"] == "ENTRY"]["Ticker"].tolist()
+tp1_list   = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
+tp2_list   = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
+exit_list  = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
 
-        y = df.iloc[-1]["Close"]
-        d = df.iloc[-2]["Close"]
+text = "📊 *TÄGLICHE SIGNALAUSWERTUNG*\n\n"
+text += f"😱 *Fear & Greed:* {fear_greed_value if fear_greed_value else 'Nicht verfügbar'}\n"
+text += f"📉 *Nasdaq-100 gestern:* {nasdaq_perf:+.2f} %\n\n"
 
-        perf = (y / d - 1) * 100
-        return float(round(perf, 2))
-    except:
-        return None
+text += "🚀 *ENTRY Signale:*\n"
+text += "\n".join([f"• {t}" for t in entry_list]) if entry_list else "Keine"
+text += "\n\n🎯 *TP1:*\n"
+text += "\n".join([f"• {t}" for t in tp1_list]) if tp1_list else "Keine"
+text += "\n\n🏁 *TP2:*\n"
+text += "\n".join([f"• {t}" for t in tp2_list]) if tp2_list else "Keine"
+text += "\n\n❤️ *EXIT Signale:*\n"
+text += "\n".join([f"• {t}" for t in exit_list]) if exit_list else "Keine"
 
 # ================================
 # ✅ TELEGRAM SENDEN
 # ================================
-def send_telegram(text):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Telegram Daten fehlen.")
-        return
+url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+payload = {
+    "chat_id": CHAT_ID,
+    "text": text,
+    "parse_mode": "Markdown"
+}
+requests.post(url, data=payload)
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    requests.post(url, data=payload)
-
-# ================================
-# ✅ HAUPTPROGRAMM
-# ================================
-def main():
-    tickers = load_tickers()
-    positions = load_positions(tickers)
-    signals = []
-
-    print("====================================")
-    print("GLOBAL SCREENER START")
-    print("Datum:", dt.date.today())
-    print("Ticker:", len(tickers))
-    print("====================================")
-
-    for TICKER in tickers:
-        try:
-            df = yf.download(TICKER, period=DATA_PERIOD, progress=False)
-
-            if df.empty or len(df) < 200:
-                continue
-
-            df["EMA20"]  = df["Close"].ewm(span=20).mean()
-            df["EMA50"]  = df["Close"].ewm(span=50).mean()
-            df["EMA200"] = df["Close"].ewm(span=200).mean()
-            df = df.dropna()
-
-            yesterday  = df.iloc[-1]
-            day_before = df.iloc[-2]
-
-            entry = (
-                (yesterday["EMA20"] > yesterday["EMA50"]) and
-                (yesterday["EMA50"] > yesterday["EMA200"]) and
-                not (
-                    (day_before["EMA20"] > day_before["EMA50"]) and
-                    (day_before["EMA50"] > day_before["EMA200"])
-                )
-            )
-
-            exit_sig = (
-                (yesterday["Close"] < yesterday["EMA200"]) and
-                (day_before["Close"] >= day_before["EMA200"])
-            )
-
-            tp1 = yesterday["Close"] >= 1.10 * day_before["Close"]
-            tp2 = yesterday["Close"] >= 1.20 * day_before["Close"]
-
-            pos = positions[TICKER]
-
-            if entry and not pos["in_position"]:
-                signals.append([TICKER, "ENTRY"])
-                pos["in_position"] = True
-                pos["tp1_hit"] = False
-                pos["tp2_hit"] = False
-
-            elif tp2 and pos["in_position"] and pos["tp1_hit"] and not pos["tp2_hit"]:
-                signals.append([TICKER, "TP2"])
-                pos["tp2_hit"] = True
-
-            elif tp1 and pos["in_position"] and not pos["tp1_hit"]:
-                signals.append([TICKER, "TP1"])
-                pos["tp1_hit"] = True
-
-            elif exit_sig and pos["in_position"]:
-                signals.append([TICKER, "EXIT"])
-                pos["in_position"] = False
-                pos["tp1_hit"] = False
-                pos["tp2_hit"] = False
-
-            positions[TICKER] = pos
-
-        except Exception as e:
-            print("Fehler bei:", TICKER, e)
-
-    save_positions(positions)
-
-    signals_df = pd.DataFrame(signals, columns=["Ticker", "Signal"])
-
-    fear_greed = get_fear_greed()
-    nasdaq_perf = get_nasdaq100_performance()
-
-    text = "📊 *TÄGLICHE SIGNALAUSWERTUNG*\n\n"
-
-    def block(name, s):
-        lst = signals_df[signals_df["Signal"] == s]["Ticker"].tolist()
-        if lst:
-            return f"*{name}*\n" + "\n".join(lst) + "\n\n"
-        return ""
-
-    text += block("🟢 ENTRY", "ENTRY")
-    text += block("🟡 TP1", "TP1")
-    text += block("🟠 TP2", "TP2")
-    text += block("🔴 EXIT", "EXIT")
-
-    text += "────────────\n"
-    text += f"😨 Fear & Greed: {fear_greed}\n"
-
-    if nasdaq_perf is not None:
-        text += f"📉 Nasdaq-100 gestern: {nasdaq_perf:+.2f} %\n"
-
-    send_telegram(text)
-
-    print("====================================")
-    print("FERTIG | Signale:", len(signals_df))
-    print("====================================")
-
-if __name__ == "__main__":
-    main()
+print("====================================")
+print("GLOBAL-SCREENER FERTIG")
+print("Signale:", len(signals_df))
+print("====================================")
