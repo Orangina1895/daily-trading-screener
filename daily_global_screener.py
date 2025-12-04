@@ -6,9 +6,10 @@ from datetime import datetime
 # ================================
 # 🔐 TELEGRAM DATEN
 # ================================
-TELEGRAM_TOKEN = "8402213841:AAEcmH8k_31hob-A7K-TzmUy9E502QIn0CM"
-CHAT_ID = 7850016138
+import os
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 # ================================
 # PARAMETER
 # ================================
@@ -156,3 +157,4 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
