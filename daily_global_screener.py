@@ -2,58 +2,43 @@ import yfinance as yf
 import pandas as pd
 import requests
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ================================
-# ✅ CONFIG
+# ✅ SETTINGS
 # ================================
-START = "2022-01-01"
-END = datetime.now().strftime("%Y-%m-%d")
+START = "2023-01-01"
+END = datetime.today().strftime("%Y-%m-%d")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-POSITIONS_FILE = "positions.csv"
+# ================================
+# ✅ TICKER LISTE (STABILER FALLBACK)
+# ================================
+tickers = [
+    "NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","META","TSLA","AVGO","ASML",
+    "NFLX","PLTR","COST","AMD","ADBE","ADI"
+]
 
 # ================================
-# ✅ NASDAQ TOP 500 (DYNAMISCH + FALLBACK)
+# ✅ POSITION TRACKING (virtuell)
 # ================================
-def load_nasdaq_top_500():
-    try:
-        print("Lade Nasdaq Top 500 dynamisch...")
-        url = "https://www.nasdaq.com/api/screener/stocks?tableonly=true&limit=500"
-        data = requests.get(url, timeout=10).json()
-        tickers = [row["symbol"] for row in data["rows"]]
-        print("Nasdaq Top 500 geladen:", len(tickers))
-        return tickers
-    except:
-        print("Dynamischer Nasdaq-Download fehlgeschlagen – Fallback aktiv.")
-        return ["NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","META","TSLA","AVGO",
-                "ASML","NFLX","PLTR","COST","AMD","ADBE","ADI"]
-
-tickers = load_nasdaq_top_500()
-
-# ================================
-# ✅ POSITIONEN LADEN
-# ================================
-if os.path.exists(POSITIONS_FILE):
-    positions = pd.read_csv(POSITIONS_FILE, index_col=0)["in_position"].to_dict()
-else:
-    positions = {}
+positions = {}
 
 def in_position(ticker):
     return positions.get(ticker, False)
 
-def save_positions():
-    pd.DataFrame.from_dict(positions, orient="index", columns=["in_position"]).to_csv(POSITIONS_FILE)
-
 # ================================
-# ✅ SIGNAL LOGIK
+# ✅ SIGNALERKENNUNG
 # ================================
 signals = []
+checked_count = 0
 
 for TICKER in tickers:
     try:
+        checked_count += 1
+
         df = yf.download(TICKER, start=START, end=END, progress=False)
 
         if df.empty or len(df) < 250:
@@ -67,8 +52,12 @@ for TICKER in tickers:
         day_before = df.iloc[-3]
 
         entry = (
-            yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
-            and not (day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"])
+            yesterday["EMA20"] > yesterday["EMA50"]
+            and yesterday["EMA50"] > yesterday["EMA200"]
+            and not (
+                day_before["EMA20"] > day_before["EMA50"]
+                and day_before["EMA50"] > day_before["EMA200"]
+            )
         )
 
         exit_sig = (
@@ -96,48 +85,58 @@ for TICKER in tickers:
     except Exception as e:
         print("Fehler bei:", TICKER, e)
 
-save_positions()
-
 signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
 
 # ================================
-# ✅ FEAR & GREED INDEX
+# ✅ FEAR & GREED (ROBUST)
 # ================================
+fear_greed = "Nicht verfügbar"
 try:
-    fg = requests.get("https://api.alternative.me/fng/").json()
-    fear_greed_value = fg["data"][0]["value"]
+    url = "https://api.alternative.me/fng/"
+    r = requests.get(url, timeout=10).json()
+    fear_greed = r["data"][0]["value"]
 except:
-    fear_greed_value = None
+    pass
 
 # ================================
-# ✅ NASDAQ-100 PERFORMANCE
+# ✅ NASDAQ 100 PERFORMANCE (NUMMERISCH KORREKT)
 # ================================
+nasdaq_perf = 0.0
 try:
     ndx = yf.download("^NDX", period="5d", progress=False)
-    nasdaq_perf = (ndx["Close"].iloc[-1] / ndx["Close"].iloc[-2] - 1) * 100
+    ndx_close_today = float(ndx["Close"].iloc[-1])
+    ndx_close_yesterday = float(ndx["Close"].iloc[-2])
+    nasdaq_perf = (ndx_close_today / ndx_close_yesterday - 1) * 100
 except:
-    nasdaq_perf = 0.0
+    pass
 
 # ================================
-# ✅ TELEGRAM FORMAT
+# ✅ TELEGRAM FORMATIERUNG
 # ================================
 entry_list = signals_df[signals_df["Neues Signal"] == "ENTRY"]["Ticker"].tolist()
-tp1_list   = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
-tp2_list   = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
-exit_list  = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
+tp1_list = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
+tp2_list = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
+exit_list = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
 
 text = "📊 *TÄGLICHE SIGNALAUSWERTUNG*\n\n"
-text += f"😱 *Fear & Greed:* {fear_greed_value if fear_greed_value else 'Nicht verfügbar'}\n"
-text += f"📉 *Nasdaq-100 gestern:* {nasdaq_perf:+.2f} %\n\n"
+text += f"🔍 *Heute gescannt:* {checked_count} Aktien\n\n"
+text += f"😱 Fear & Greed: {fear_greed}\n"
+text += f"📉 Nasdaq-100 gestern: {nasdaq_perf:+.2f} %\n\n"
 
 text += "🚀 *ENTRY Signale:*\n"
-text += "\n".join([f"• {t}" for t in entry_list]) if entry_list else "Keine"
-text += "\n\n🎯 *TP1:*\n"
-text += "\n".join([f"• {t}" for t in tp1_list]) if tp1_list else "Keine"
-text += "\n\n🏁 *TP2:*\n"
-text += "\n".join([f"• {t}" for t in tp2_list]) if tp2_list else "Keine"
-text += "\n\n❤️ *EXIT Signale:*\n"
-text += "\n".join([f"• {t}" for t in exit_list]) if exit_list else "Keine"
+text += "\n".join(entry_list) if entry_list else "Keine"
+text += "\n\n"
+
+text += "🎯 *TP1:*\n"
+text += "\n".join(tp1_list) if tp1_list else "Keine"
+text += "\n\n"
+
+text += "🏁 *TP2:*\n"
+text += "\n".join(tp2_list) if tp2_list else "Keine"
+text += "\n\n"
+
+text += "🛑 *EXIT Signale:*\n"
+text += "\n".join(exit_list) if exit_list else "Keine"
 
 # ================================
 # ✅ TELEGRAM SENDEN
@@ -152,5 +151,6 @@ requests.post(url, data=payload)
 
 print("====================================")
 print("GLOBAL-SCREENER FERTIG")
+print("Gescannt:", checked_count)
 print("Signale:", len(signals_df))
 print("====================================")
