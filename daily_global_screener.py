@@ -29,7 +29,40 @@ def in_position(ticker):
 # ================================
 # 📊 TICKER LISTE (NASDAQ TOP 500)
 # ================================
-tickers = pd.read_csv("nasdaq_top_500.csv")["Ticker"].dropna().tolist()
+print("Lade Nasdaq Top 500 dynamisch...")
+
+nasdaq_url = "https://api.nasdaq.com/api/screener/stocks?exchange=nasdaq&download=true"
+headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+    "Referer": "https://www.nasdaq.com"
+}
+
+r = requests.get(nasdaq_url, headers=headers)
+r.raise_for_status()
+data = r.json()
+
+nasdaq_df = pd.DataFrame(data["data"]["rows"])
+
+nasdaq_df = nasdaq_df[["symbol", "marketCap"]].copy()
+
+nasdaq_df["marketCap"] = (
+    nasdaq_df["marketCap"]
+    .astype(str)
+    .str.replace(",", "", regex=False)
+    .str.replace("-", "", regex=False)
+)
+
+nasdaq_df = nasdaq_df[nasdaq_df["marketCap"].str.strip() != ""]
+nasdaq_df["marketCap"] = nasdaq_df["marketCap"].astype(float)
+
+nasdaq_df = nasdaq_df[nasdaq_df["marketCap"] > 0]
+nasdaq_df = nasdaq_df.sort_values("marketCap", ascending=False)
+
+tickers = nasdaq_df["symbol"].head(500).tolist()
+
+print("Nasdaq Top 500 geladen:", len(tickers))
+
 
 # ================================
 # 🗓️ DATUM
@@ -177,4 +210,5 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
 
