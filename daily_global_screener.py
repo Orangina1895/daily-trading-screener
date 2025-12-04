@@ -125,13 +125,41 @@ signals_df.to_excel(filename, index=False)
 status_df.to_csv(STATUS_FILE, index=False)
 
 # ================================
-# ✅ TELEGRAM SENDEN
+# ✅ TELEGRAM SENDEN (STRUKTURIERT)
 # ================================
-if len(signals_df) > 0:
-    text = "📈 *NEUE TRADING-SIGNALE (GESTERN)*\n\n"
-    for _, row in signals_df.iterrows():
-        text += f"{row['Ticker']} → {row['Neues Signal']}\n"
-else:
+
+entry_list = signals_df[signals_df["Neues Signal"] == "ENTRY"]["Ticker"].tolist()
+tp1_list   = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
+tp2_list   = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
+exit_list  = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
+
+text = "📊 *TRADING-SIGNALE (GESTERN)*\n\n"
+
+if len(entry_list) > 0:
+    text += "🟢 *ENTRY Signale:*\n"
+    for t in entry_list:
+        text += f"- {t}\n"
+    text += "\n"
+
+if len(tp1_list) > 0:
+    text += "🟡 *TP1:*\n"
+    for t in tp1_list:
+        text += f"- {t}\n"
+    text += "\n"
+
+if len(tp2_list) > 0:
+    text += "🟠 *TP2:*\n"
+    for t in tp2_list:
+        text += f"- {t}\n"
+    text += "\n"
+
+if len(exit_list) > 0:
+    text += "🔴 *EXIT Signale:*\n"
+    for t in exit_list:
+        text += f"- {t}\n"
+    text += "\n"
+
+if len(signals_df) == 0:
     text = "✅ Keine neuen Signale gestern."
 
 url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -143,8 +171,10 @@ payload = {
 
 requests.post(url, data=payload)
 
+
 print("====================================")
 print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
