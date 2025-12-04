@@ -1,44 +1,101 @@
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 import requests
+import datetime
 import os
-from datetime import datetime
 
 # ================================
-# ✅ SETTINGS
+# ✅ KONFIGURATION
 # ================================
-START = "2023-01-01"
-END = datetime.today().strftime("%Y-%m-%d")
+START_DEPOT = 30000
+RISK_PER_TRADE = 0.005   # 0,5 %
+START = "2020-01-01"
+END = datetime.date.today().isoformat()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # ================================
-# ✅ TICKER LISTE (STABILER FALLBACK)
+# ✅ DEPOT (VIRTUELL)
 # ================================
-tickers = [
-    "NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","META","TSLA","AVGO","ASML",
-    "NFLX","PLTR","COST","AMD","ADBE","ADI"
-]
+depot_value = START_DEPOT
+positions = {}  # Merkt aktive Trades je Ticker
 
 # ================================
-# ✅ POSITION TRACKING (virtuell)
+# ✅ UNIVERSE: NASDAQ TOP 500 + MDAX + SDAX
 # ================================
-positions = {}
+def load_universe():
+    tickers = set()
+
+    # --- NASDAQ TOP 500 ---
+    try:
+        url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=500"
+        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        data = requests.get(url, headers=headers).json()
+        rows = data["data"]["table"]["rows"]
+
+        for r in rows:
+            if r["symbol"]:
+                tickers.add(r["symbol"])
+
+    except:
+        tickers |= {
+            "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","TSLA","AVGO",
+            "ASML","AMD","NFLX","PLTR","COST","ADBE","ADI"
+        }
+
+    # --- MDAX ---
+    try:
+        mdax = pd.read_html("https://de.wikipedia.org/wiki/MDAX")[0]["Ticker"].dropna()
+        tickers |= {f"{t}.DE" for t in mdax}
+    except:
+        pass
+
+    # --- SDAX ---
+    try:
+        sdax = pd.read_html("https://de.wikipedia.org/wiki/SDAX")[0]["Ticker"].dropna()
+        tickers |= {f"{t}.DE" for t in sdax}
+    except:
+        pass
+
+    return sorted(list(tickers))
+
+tickers = load_universe()
+scanned_count = len(tickers)
+
+# ================================
+# ✅ FEAR & GREED INDEX
+# ================================
+def get_fear_greed():
+    try:
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        data = requests.get(url).json()
+        latest = list(data["fear_and_greed_historical"].values())[-1]
+        return f"{latest['score']} ({latest['rating']})"
+    except:
+        return "Nicht verfügbar"
+
+fear_greed = get_fear_greed()
+
+# ================================
+# ✅ NASDAQ-100 PERFORMANCE (GESTERN)
+# ================================
+try:
+    ndx = yf.download("^NDX", period="5d", progress=False)
+    ndx_pct = float((ndx["Close"].iloc[-1] - ndx["Close"].iloc[-2]) / ndx["Close"].iloc[-2] * 100)
+except:
+    ndx_pct = 0.0
+
+# ================================
+# ✅ SIGNAL LOGIK
+# ================================
+signals = []
 
 def in_position(ticker):
     return positions.get(ticker, False)
 
-# ================================
-# ✅ SIGNALERKENNUNG
-# ================================
-signals = []
-checked_count = 0
-
 for TICKER in tickers:
     try:
-        checked_count += 1
-
         df = yf.download(TICKER, start=START, end=END, progress=False)
 
         if df.empty or len(df) < 250:
@@ -52,12 +109,8 @@ for TICKER in tickers:
         day_before = df.iloc[-3]
 
         entry = (
-            yesterday["EMA20"] > yesterday["EMA50"]
-            and yesterday["EMA50"] > yesterday["EMA200"]
-            and not (
-                day_before["EMA20"] > day_before["EMA50"]
-                and day_before["EMA50"] > day_before["EMA200"]
-            )
+            yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
+            and not (day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"])
         )
 
         exit_sig = (
@@ -65,8 +118,8 @@ for TICKER in tickers:
             and day_before["Close"] >= day_before["EMA200"]
         )
 
-        tp1 = yesterday["Close"] > 1.10 * day_before["Close"]
-        tp2 = yesterday["Close"] > 1.20 * day_before["Close"]
+        tp1 = yesterday["Close"] > 1.1 * day_before["Close"]
+        tp2 = yesterday["Close"] > 1.2 * day_before["Close"]
 
         if entry and not in_position(TICKER):
             signals.append([TICKER, "ENTRY"])
@@ -83,60 +136,36 @@ for TICKER in tickers:
             positions[TICKER] = False
 
     except Exception as e:
-        print("Fehler bei:", TICKER, e)
+        continue
 
-signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
-
-# ================================
-# ✅ FEAR & GREED (ROBUST)
-# ================================
-fear_greed = "Nicht verfügbar"
-try:
-    url = "https://api.alternative.me/fng/"
-    r = requests.get(url, timeout=10).json()
-    fear_greed = r["data"][0]["value"]
-except:
-    pass
-
-# ================================
-# ✅ NASDAQ 100 PERFORMANCE (NUMMERISCH KORREKT)
-# ================================
-nasdaq_perf = 0.0
-try:
-    ndx = yf.download("^NDX", period="5d", progress=False)
-    ndx_close_today = float(ndx["Close"].iloc[-1])
-    ndx_close_yesterday = float(ndx["Close"].iloc[-2])
-    nasdaq_perf = (ndx_close_today / ndx_close_yesterday - 1) * 100
-except:
-    pass
+signals_df = pd.DataFrame(signals, columns=["Ticker", "Signal"])
 
 # ================================
 # ✅ TELEGRAM FORMATIERUNG
 # ================================
-entry_list = signals_df[signals_df["Neues Signal"] == "ENTRY"]["Ticker"].tolist()
-tp1_list = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
-tp2_list = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
-exit_list = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
+entry_list = signals_df[signals_df["Signal"] == "ENTRY"]["Ticker"].tolist()
+tp1_list = signals_df[signals_df["Signal"] == "TP1"]["Ticker"].tolist()
+tp2_list = signals_df[signals_df["Signal"] == "TP2"]["Ticker"].tolist()
+exit_list = signals_df[signals_df["Signal"] == "EXIT"]["Ticker"].tolist()
 
-text = "📊 *TÄGLICHE SIGNALAUSWERTUNG*\n\n"
-text += f"🔍 *Heute gescannt:* {checked_count} Aktien\n\n"
-text += f"😱 Fear & Greed: {fear_greed}\n"
-text += f"📉 Nasdaq-100 gestern: {nasdaq_perf:+.2f} %\n\n"
+text = f"""📡 *DAILY GLOBAL SCREENER*
+Ich habe heute ✅ *{scanned_count} Aktien* für dich gescannt
 
-text += "🚀 *ENTRY Signale:*\n"
-text += "\n".join(entry_list) if entry_list else "Keine"
-text += "\n\n"
+📈 *ENTRY Signale:*
+{chr(10).join(entry_list) if entry_list else "Keine"}
 
-text += "🎯 *TP1:*\n"
-text += "\n".join(tp1_list) if tp1_list else "Keine"
-text += "\n\n"
+📊 *TP1:*
+{chr(10).join(tp1_list) if tp1_list else "Keine"}
 
-text += "🏁 *TP2:*\n"
-text += "\n".join(tp2_list) if tp2_list else "Keine"
-text += "\n\n"
+🚀 *TP2:*
+{chr(10).join(tp2_list) if tp2_list else "Keine"}
 
-text += "🛑 *EXIT Signale:*\n"
-text += "\n".join(exit_list) if exit_list else "Keine"
+📉 *EXIT Signale:*
+{chr(10).join(exit_list) if exit_list else "Keine"}
+
+😱 *Fear & Greed:* {fear_greed}
+📉 *Nasdaq-100 gestern:* {ndx_pct:+.2f} %
+"""
 
 # ================================
 # ✅ TELEGRAM SENDEN
@@ -149,8 +178,13 @@ payload = {
 }
 requests.post(url, data=payload)
 
+# ================================
+# ✅ EXCEL EXPORT
+# ================================
+signals_df.to_excel("daily_signals.xlsx", index=False)
+
 print("====================================")
-print("GLOBAL-SCREENER FERTIG")
-print("Gescannt:", checked_count)
+print("GLOBAL SCREENER FERTIG")
+print("Gescannt:", scanned_count)
 print("Signale:", len(signals_df))
 print("====================================")
