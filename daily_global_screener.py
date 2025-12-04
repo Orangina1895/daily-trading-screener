@@ -24,7 +24,7 @@ print("Lade Nasdaq Composite Liste...")
 import requests
 import io
 
-print("Lade vollständige Nasdaq Composite Liste über Nasdaq API...")
+print("Lade Nasdaq-Aktien über Nasdaq-API und filtere Top 500 nach MarketCap...")
 
 nasdaq_url = "https://api.nasdaq.com/api/screener/stocks?exchange=nasdaq&download=true"
 
@@ -35,19 +35,32 @@ headers = {
 }
 
 r = requests.get(nasdaq_url, headers=headers)
+r.raise_for_status()
 
-if r.status_code != 200:
-    raise Exception("Nasdaq API nicht erreichbar")
+data = r.json()
 
-json_data = r.json()
+nasdaq_df = pd.DataFrame(data["data"]["rows"])
 
-nasdaq_df = pd.DataFrame(json_data["data"]["rows"])
+# Spaltennamen: symbol, marketCap o.ä.
+nasdaq_df = nasdaq_df[["symbol", "marketCap"]].dropna()
 
-NASDAQ_COMPOSITE = nasdaq_df["symbol"].dropna().astype(str).tolist()
+# MarketCap von Strings wie "1,234,567,890" in float wandeln
+nasdaq_df["marketCap"] = (
+    nasdaq_df["marketCap"]
+    .astype(str)
+    .str.replace(",", "", regex=False)
+    .astype(float)
+)
 
-print("Nasdaq Composite Aktien geladen:", len(NASDAQ_COMPOSITE))
+# Nur positive MarketCap und nach Größe sortieren
+nasdaq_df = nasdaq_df[nasdaq_df["marketCap"] > 0]
+nasdaq_df = nasdaq_df.sort_values("marketCap", ascending=False)
 
-print("Anzahl Nasdaq Composite Aktien:", len(NASDAQ_COMPOSITE))
+# Top 500 Symbole
+NASDAQ_TOP500 = nasdaq_df["symbol"].head(500).tolist()
+
+print("Anzahl Nasdaq Top-500-Aktien:", len(NASDAQ_TOP500))
+
 
 # ================================
 # ✅ MDAX & SDAX FEST
@@ -157,4 +170,5 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
 
