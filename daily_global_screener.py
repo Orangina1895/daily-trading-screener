@@ -72,58 +72,47 @@ START = END - timedelta(days=400)
 
 signals = []
 
-# ================================
-# 🔁 SCREENER LOOP
-# ================================
 for TICKER in tickers:
-
     try:
         df = yf.download(TICKER, start=START, end=END, progress=False)
 
-        if len(df) < 200:
+        if df.empty or len(df) < 250:
             continue
 
+        df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["EMA200"] = df["Close"].ewm(span=200).mean()
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        yesterday = df.iloc[-2]
+        day_before = df.iloc[-3]
 
-        close = last["Close"]
-        ema50 = last["EMA50"]
-        ema200 = last["EMA200"]
+        entry = (
+            yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
+            and not (day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"])
+        )
 
-        # ================================
-        # ✅ ENTRY
-        # ================================
-        long_signal = close > ema50 and ema50 > ema200 and not in_position(TICKER)
+        exit_sig = (
+            yesterday["Close"] < yesterday["EMA200"]
+            and day_before["Close"] >= day_before["EMA200"]
+        )
 
-        if long_signal:
-            signals.append({
-                "Ticker": TICKER,
-                "Neues Signal": "ENTRY"
-            })
+        tp1 = yesterday["Close"] > 1.1 * day_before["Close"]
+        tp2 = yesterday["Close"] > 1.2 * day_before["Close"]
 
-            if TICKER in status_df["Ticker"].values:
-                status_df.loc[status_df["Ticker"] == TICKER, "InPosition"] = 1
-            else:
-                status_df = pd.concat([status_df, pd.DataFrame([{
-                    "Ticker": TICKER,
-                    "InPosition": 1
-                }])])
+        if entry:
+            signals.append([TICKER, "ENTRY"])
+        elif tp2:
+            signals.append([TICKER, "TP2"])
+        elif tp1:
+            signals.append([TICKER, "TP1"])
+        elif exit_sig:
+            signals.append([TICKER, "EXIT"])
 
-        # ================================
-        # ✅ EXIT (NUR WENN LONG AKTIV)
-        # ================================
-        exit_signal = close < ema200 and in_position(TICKER)
+    except Exception as e:
+        print("Fehler bei:", TICKER, e)
 
-        if exit_signal:
-            signals.append({
-                "Ticker": TICKER,
-                "Neues Signal": "EXIT"
-            })
+signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
 
-            status_df.loc[status_df["Ticker"] == TICKER, "InPosition"] = 0
 
         # ================================
         # ✅ TP1 / TP2 (OPTIONAL – NUR BEI AKTIVEM TRADE)
@@ -210,5 +199,6 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
 
 
