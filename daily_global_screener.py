@@ -73,28 +73,9 @@ def load_universe():
 
     return tickers
 
+
 tickers = load_universe()
 checked_count = len(tickers)
-
-# ================================
-# ✅ FEAR & GREED INDEX (STABIL)
-# ================================
-def get_fear_greed():
-    try:
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        data = resp.json()
-
-        latest = list(data["fear_and_greed_historical"].values())[-1]
-        score = latest["score"]
-        rating = latest["rating"]
-
-        return f"{score} ({rating})"
-    except:
-        return "API blockiert (CNN)"
-
-fear_greed = get_fear_greed()
 
 # ================================
 # ✅ NASDAQ-100 PERFORMANCE (GESTERN)
@@ -188,7 +169,6 @@ Ich habe heute ✅ *{checked_count} Aktien* für dich gescannt
 📉 *EXIT Signale:*
 {chr(10).join(exit_list) if exit_list else "Keine"}
 
-😱 *Fear & Greed:* {fear_greed}
 📉 *Nasdaq-100 gestern:* {ndx_pct:+.2f} %
 """
 
