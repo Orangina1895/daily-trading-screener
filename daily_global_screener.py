@@ -81,20 +81,15 @@ checked_count = len(tickers)
 # ================================
 def get_fear_greed():
     try:
-        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        data = resp.json()
+        url = "https://api.alternative.me/fng/?limit=1"
+        data = requests.get(url, timeout=10).json()
 
-        latest = list(data["fear_and_greed_historical"].values())[-1]
-        score = latest["score"]
-        rating = latest["rating"]
+        value = data["data"][0]["value"]
+        classification = data["data"][0]["value_classification"]
 
-        return f"{score} ({rating})"
+        return f"{value} ({classification})"
     except:
-        return "API blockiert (CNN)"
-
-fear_greed = get_fear_greed()
+        return "Nicht verfügbar"
 
 # ================================
 # ✅ NASDAQ-100 PERFORMANCE (GESTERN)
@@ -213,3 +208,4 @@ print("GLOBAL SCREENER FERTIG")
 print("Gescannt:", checked_count)
 print("Signale:", len(signals_df))
 print("====================================")
+
