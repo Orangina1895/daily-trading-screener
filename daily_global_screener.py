@@ -41,25 +41,33 @@ data = r.json()
 
 nasdaq_df = pd.DataFrame(data["data"]["rows"])
 
-# Spaltennamen: symbol, marketCap o.ä.
-nasdaq_df = nasdaq_df[["symbol", "marketCap"]].dropna()
+# ✅ Nur Spalten mit Symbol + MarketCap
+nasdaq_df = nasdaq_df[["symbol", "marketCap"]]
 
-# MarketCap von Strings wie "1,234,567,890" in float wandeln
+# ✅ ALLE leeren, None, "-" etc. entfernen
 nasdaq_df["marketCap"] = (
     nasdaq_df["marketCap"]
     .astype(str)
     .str.replace(",", "", regex=False)
-    .astype(float)
+    .str.replace("-", "", regex=False)
 )
 
-# Nur positive MarketCap und nach Größe sortieren
+nasdaq_df = nasdaq_df[nasdaq_df["marketCap"].str.strip() != ""]
+
+# ✅ Jetzt erst sicher zu float konvertieren
+nasdaq_df["marketCap"] = nasdaq_df["marketCap"].astype(float)
+
+# ✅ Nur positive MarketCaps
 nasdaq_df = nasdaq_df[nasdaq_df["marketCap"] > 0]
+
+# ✅ Nach Größe sortieren
 nasdaq_df = nasdaq_df.sort_values("marketCap", ascending=False)
 
-# Top 500 Symbole
+# ✅ Top 500
 NASDAQ_TOP500 = nasdaq_df["symbol"].head(500).tolist()
 
 print("Anzahl Nasdaq Top-500-Aktien:", len(NASDAQ_TOP500))
+
 
 
 # ================================
@@ -171,6 +179,7 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
 
 
 
