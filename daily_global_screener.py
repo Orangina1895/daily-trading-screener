@@ -1,75 +1,39 @@
 import yfinance as yf
 import pandas as pd
 import requests
-import os
 from datetime import datetime, timedelta
 
 # ================================
-# 🔐 TELEGRAM KONFIG
+# ✅ EINSTELLUNGEN
 # ================================
+START = "1990-01-01"
+END = datetime.today().strftime("%Y-%m-%d")
+
 TELEGRAM_TOKEN = "DEIN_TELEGRAM_BOT_TOKEN"
 CHAT_ID = "DEINE_CHAT_ID"
 
 # ================================
-# 📁 STATUS FILE
+# ✅ NASDAQ TOP 500 LADEN
 # ================================
-STATUS_FILE = "trade_status.csv"
+print("Lade Nasdaq Top 500...")
 
-if os.path.exists(STATUS_FILE):
-    status_df = pd.read_csv(STATUS_FILE)
-else:
-    status_df = pd.DataFrame(columns=["Ticker", "InPosition"])
+nasdaq_url = "https://raw.githubusercontent.com/datasets/nasdaq-listings/master/data/nasdaq-listed-symbols.csv"
+nasdaq_df = pd.read_csv(nasdaq_url)
+tickers = nasdaq_df["Symbol"].dropna().unique().tolist()[:500]
+
+print("Aktien geladen:", len(tickers))
+
+# ================================
+# ✅ POSITIONEN SPEICHERN
+# ================================
+positions = {}
 
 def in_position(ticker):
-    row = status_df[status_df["Ticker"] == ticker]
-    if row.empty:
-        return False
-    return row.iloc[0]["InPosition"] == 1
+    return positions.get(ticker, False)
 
 # ================================
-# 📊 TICKER LISTE (NASDAQ TOP 500)
+# ✅ SIGNAL LOGIK
 # ================================
-print("Lade Nasdaq Top 500 dynamisch...")
-
-nasdaq_url = "https://api.nasdaq.com/api/screener/stocks?exchange=nasdaq&download=true"
-headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-    "Referer": "https://www.nasdaq.com"
-}
-
-r = requests.get(nasdaq_url, headers=headers)
-r.raise_for_status()
-data = r.json()
-
-nasdaq_df = pd.DataFrame(data["data"]["rows"])
-
-nasdaq_df = nasdaq_df[["symbol", "marketCap"]].copy()
-
-nasdaq_df["marketCap"] = (
-    nasdaq_df["marketCap"]
-    .astype(str)
-    .str.replace(",", "", regex=False)
-    .str.replace("-", "", regex=False)
-)
-
-nasdaq_df = nasdaq_df[nasdaq_df["marketCap"].str.strip() != ""]
-nasdaq_df["marketCap"] = nasdaq_df["marketCap"].astype(float)
-
-nasdaq_df = nasdaq_df[nasdaq_df["marketCap"] > 0]
-nasdaq_df = nasdaq_df.sort_values("marketCap", ascending=False)
-
-tickers = nasdaq_df["symbol"].head(500).tolist()
-
-print("Nasdaq Top 500 geladen:", len(tickers))
-
-
-# ================================
-# 🗓️ DATUM
-# ================================
-END = datetime.today() - timedelta(days=1)
-START = END - timedelta(days=400)
-
 signals = []
 
 for TICKER in tickers:
@@ -99,91 +63,53 @@ for TICKER in tickers:
         tp1 = yesterday["Close"] > 1.1 * day_before["Close"]
         tp2 = yesterday["Close"] > 1.2 * day_before["Close"]
 
-        if entry:
+        if entry and not in_position(TICKER):
             signals.append([TICKER, "ENTRY"])
-        elif tp2:
+            positions[TICKER] = True
+
+        elif tp2 and in_position(TICKER):
             signals.append([TICKER, "TP2"])
-        elif tp1:
+
+        elif tp1 and in_position(TICKER):
             signals.append([TICKER, "TP1"])
-        elif exit_sig:
+
+        elif exit_sig and in_position(TICKER):
             signals.append([TICKER, "EXIT"])
+            positions[TICKER] = False
 
     except Exception as e:
         print("Fehler bei:", TICKER, e)
 
 signals_df = pd.DataFrame(signals, columns=["Ticker", "Neues Signal"])
 
-
-        # ================================
-        # ✅ TP1 / TP2 (OPTIONAL – NUR BEI AKTIVEM TRADE)
-        # ================================
-        if in_position(TICKER):
-
-            tp1 = close > df["Close"].rolling(50).max().iloc[-2]
-            tp2 = close > df["Close"].rolling(100).max().iloc[-2]
-
-            if tp1:
-                signals.append({
-                    "Ticker": TICKER,
-                    "Neues Signal": "TP1"
-                })
-
-            if tp2:
-                signals.append({
-                    "Ticker": TICKER,
-                    "Neues Signal": "TP2"
-                })
-
-    except Exception as e:
-        print("Fehler bei:", TICKER, e)
-
 # ================================
-# ✅ SPEICHERN
+# ✅ EXCEL EXPORT
 # ================================
-filename = "daily_signals.xlsx"
-signals_df = pd.DataFrame(signals)
-
+filename = f"daily_signals_{datetime.today().strftime('%Y-%m-%d')}.xlsx"
 signals_df.to_excel(filename, index=False)
-status_df.to_csv(STATUS_FILE, index=False)
 
 # ================================
-# ✅ TELEGRAM SENDEN (STRUKTURIERT)
+# ✅ TELEGRAM FORMATIERUNG
 # ================================
-
 entry_list = signals_df[signals_df["Neues Signal"] == "ENTRY"]["Ticker"].tolist()
-tp1_list   = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
-tp2_list   = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
-exit_list  = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
+tp1_list = signals_df[signals_df["Neues Signal"] == "TP1"]["Ticker"].tolist()
+tp2_list = signals_df[signals_df["Neues Signal"] == "TP2"]["Ticker"].tolist()
+exit_list = signals_df[signals_df["Neues Signal"] == "EXIT"]["Ticker"].tolist()
 
-text = "📊 *TRADING-SIGNALE (GESTERN)*\n\n"
+text = "📊 *TÄGLICHER TRADING-SCREENER (GESTERN)*\n\n"
 
-if len(entry_list) > 0:
-    text += "🟢 *ENTRY Signale:*\n"
-    for t in entry_list:
-        text += f"- {t}\n"
-    text += "\n"
+text += "🟢 *ENTRY Signale:*\n"
+text += "\n".join(entry_list) if entry_list else "Keine"
+text += "\n\n🟡 *TP1 Signale:*\n"
+text += "\n".join(tp1_list) if tp1_list else "Keine"
+text += "\n\n🟠 *TP2 Signale:*\n"
+text += "\n".join(tp2_list) if tp2_list else "Keine"
+text += "\n\n🔴 *EXIT Signale:*\n"
+text += "\n".join(exit_list) if exit_list else "Keine"
 
-if len(tp1_list) > 0:
-    text += "🟡 *TP1:*\n"
-    for t in tp1_list:
-        text += f"- {t}\n"
-    text += "\n"
-
-if len(tp2_list) > 0:
-    text += "🟠 *TP2:*\n"
-    for t in tp2_list:
-        text += f"- {t}\n"
-    text += "\n"
-
-if len(exit_list) > 0:
-    text += "🔴 *EXIT Signale:*\n"
-    for t in exit_list:
-        text += f"- {t}\n"
-    text += "\n"
-
-if len(signals_df) == 0:
-    text = "✅ Keine neuen Signale gestern."
-
+# ================================
+# ✅ TELEGRAM SENDEN
+# ================================
 url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 payload = {
     "chat_id": CHAT_ID,
@@ -193,12 +119,11 @@ payload = {
 
 requests.post(url, data=payload)
 
-
+# ================================
+# ✅ ABSCHLUSS
+# ================================
 print("====================================")
-print("GLOBAL-SCREENER FERTIG")
+print("GLOBAL SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
-
-
-
