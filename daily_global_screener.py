@@ -75,7 +75,8 @@ SDAX = [
 "DER.DE","NOR.DE","YOU.DE"
 ]
 
-UNIVERSE = NASDAQ_COMPOSITE + MDAX + SDAX
+UNIVERSE = NASDAQ_TOP500 + MDAX + SDAX
+
 
 signals = []
 
@@ -170,5 +171,6 @@ print("GLOBAL-SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
 
 
