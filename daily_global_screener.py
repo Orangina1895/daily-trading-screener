@@ -9,8 +9,11 @@ from datetime import datetime, timedelta
 START = "1990-01-01"
 END = datetime.today().strftime("%Y-%m-%d")
 
-TELEGRAM_TOKEN = "DEIN_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "DEINE_CHAT_ID"
+import os
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+
 
 # ================================
 # ✅ NASDAQ TOP 500 LADEN
@@ -127,3 +130,4 @@ print("GLOBAL SCREENER FERTIG")
 print("Signale:", len(signals_df))
 print("Datei:", filename)
 print("====================================")
+
