@@ -105,20 +105,33 @@ for TICKER in tickers:
         if df.empty or len(df) < 250:
             continue
 
-        df["EMA20"] = df["Close"].ewm(span=20).mean()
-        df["EMA50"] = df["Close"].ewm(span=50).mean()
+        # NEU: SMA statt EMA für Einstieg
+        df["SMA20"] = df["Close"].rolling(20).mean()
+        df["SMA50"] = df["Close"].rolling(50).mean()
+        df["SMA200"] = df["Close"].rolling(200).mean()
+
+        # Exit-Signale unverändert → weiterhin EMA
         df["EMA200"] = df["Close"].ewm(span=200).mean()
 
         yesterday = df.iloc[-2]
         day_before = df.iloc[-3]
 
+        # ============================================
+        # 🔥 NEUE EINSTIEGSLOGIK
+        # Close > SMA200 AND SMA20 > SMA50
+        # ============================================
         entry = (
-            yesterday["EMA20"] > yesterday["EMA50"] > yesterday["EMA200"]
+            yesterday["Close"] > yesterday["SMA200"]
+            and yesterday["SMA20"] > yesterday["SMA50"]
             and not (
-                day_before["EMA20"] > day_before["EMA50"] > day_before["EMA200"]
+                day_before["Close"] > day_before["SMA200"]
+                and day_before["SMA20"] > day_before["SMA50"]
             )
         )
 
+        # ============================================
+        # ❗ EXIT SIGNALE UNVERÄNDERT
+        # ============================================
         exit_sig = (
             yesterday["Close"] < yesterday["EMA200"]
             and day_before["Close"] >= day_before["EMA200"]
@@ -127,6 +140,9 @@ for TICKER in tickers:
         tp1 = yesterday["Close"] > 1.1 * day_before["Close"]
         tp2 = yesterday["Close"] > 1.2 * day_before["Close"]
 
+        # ============================================
+        # SIGNAL HINZUFÜGEN
+        # ============================================
         if entry and not in_position(TICKER):
             signals.append([TICKER, "ENTRY"])
             positions[TICKER] = True
@@ -150,9 +166,9 @@ signals_df = pd.DataFrame(signals, columns=["Ticker", "Signal"])
 # ✅ TELEGRAM FORMATIERUNG
 # ================================
 entry_list = signals_df[signals_df["Signal"] == "ENTRY"]["Ticker"].tolist()
-tp1_list = signals_df[signals_df["Signal"] == "TP1"]["Ticker"].tolist()
-tp2_list = signals_df[signals_df["Signal"] == "TP2"]["Ticker"].tolist()
-exit_list = signals_df[signals_df["Signal"] == "EXIT"]["Ticker"].tolist()
+tp1_list   = signals_df[signals_df["Signal"] == "TP1"]["Ticker"].tolist()
+tp2_list   = signals_df[signals_df["Signal"] == "TP2"]["Ticker"].tolist()
+exit_list  = signals_df[signals_df["Signal"] == "EXIT"]["Ticker"].tolist()
 
 text = f"""📡 *DAILY GLOBAL SCREENER*
 Ich habe heute ✅ *{checked_count} Aktien* für dich gescannt
