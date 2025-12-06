@@ -70,7 +70,7 @@ def force_float(x):
 
 
 # ================================
-# SIGNAL-LOGIK (wie Backtest)
+# SIGNAL-LOGIK (wie Backtest + TP1/TP2)
 # ================================
 def process_ticker_daily(ticker):
     try:
@@ -84,7 +84,7 @@ def process_ticker_daily(ticker):
     # Indikatoren berechnen
     df["SMA20"]  = df["Close"].rolling(20).mean()
     df["SMA50"]  = df["Close"].rolling(50).mean()
-    df["SMA120"] = df["Close"].rolling(120).mean()
+    df["SMA120"] = df["Close"].rolling(120).mean()  # aktuell nicht genutzt, schadet aber nicht
     df["SMA200"] = df["Close"].rolling(200).mean()
 
     df["EMA200"] = df["Close"].ewm(span=200).mean()
@@ -99,89 +99,110 @@ def process_ticker_daily(ticker):
     if df.empty:
         return []
 
-    last_date = df.index[-1].date()
+    last_date = df.index[-1].date()   # Schlusskurs des Vortags (für die Telegram-Meldung)
     signals_today = []
 
-    in_trade = False
+    in_trade = False          # max. 1 Trade pro Ticker
+    entry_price = None
     entry_date = None
     tp1_done = False
     tp2_done = False
 
+    # ================================
+    # LOOP über die Historie
+    # ================================
     for i in range(1, len(df)):
 
         row  = df.iloc[i]
         prev = df.iloc[i - 1]
 
+        date = row.index if hasattr(row, "index") else row.name
+        # row.name ist ein Timestamp (Index)
+
         date = row.name
 
-        c_close = force_float(row["Close"])
-        p_close = force_float(prev["Close"])
+        close      = force_float(row["Close"])
+        close_prev = force_float(prev["Close"])
 
-        sma20   = force_float(row["SMA20"])
-        sma50   = force_float(row["SMA50"])
-        sma200  = force_float(row["SMA200"])
+        sma20      = force_float(row["SMA20"])
+        sma50      = force_float(row["SMA50"])
+        sma200     = force_float(row["SMA200"])
 
-        prev_sma20  = force_float(prev["SMA20"])
-        prev_sma50  = force_float(prev["SMA50"])
-        prev_sma200 = force_float(prev["SMA200"])
+        sma20_prev  = force_float(prev["SMA20"])
+        sma50_prev  = force_float(prev["SMA50"])
+        sma200_prev = force_float(prev["SMA200"])
 
-        # ---------------------------------
-        # ENTRY Regel
-        entry_condition = (
-            c_close > sma200 and
+        # ====================================================
+        # ENTRY — nur wenn aktuell kein Trade für diesen Ticker
+        # Regel: Close > SMA200 UND SMA20 > SMA50
+        # Einstiegssignal am Schlusskurs, Umsetzung am Open des nächsten Tages
+        # ====================================================
+        entry_condition_now = (
+            close > sma200 and
             sma20 > sma50
         )
 
-        prev_entry_condition = (
-            p_close > prev_sma200 and
-            prev_sma20 > prev_sma50
+        entry_condition_prev = (
+            close_prev > sma200_prev and
+            sma20_prev > sma50_prev
         )
 
         if not in_trade:
-            if entry_condition and not prev_entry_condition:
-
-                in_trade   = True
-                entry_date = date
-                tp1_done   = False
-                tp2_done   = False
+            if entry_condition_now and not entry_condition_prev:
+                in_trade    = True
+                entry_price = close          # Einstiegskurs (Schlusskurs), Order am nächsten Open
+                entry_date  = date
+                tp1_done    = False
+                tp2_done    = False
 
                 if date.date() == last_date:
                     signals_today.append([ticker, "ENTRY"])
+
             continue
 
-        # ---------------------------------
-        # DYNAMISCHER EXIT
-        days = (date - entry_date).days
+        # ====================================================
+        # EXIT (dynamischer EMA-Stop) – nur nach Entry
+        # Stop wechselt je nach Haltedauer, wie im Backtest
+        # ====================================================
+        days_in_trade = (date - entry_date).days
 
-        if days < 60:
+        if days_in_trade < 60:
             stop = force_float(row["EMA200"])
-        elif days < 200:
+        elif days_in_trade < 200:
             stop = force_float(row["EMA100"])
         else:
             stop = force_float(row["EMA50"])
 
-        # EXIT (höchste Priorität)
-        if c_close <= stop * 0.97:
+        # EXIT-Bedingung (Trade bleibt offen, bis Stop verletzt)
+        if close <= stop * 0.97:
             if date.date() == last_date:
                 signals_today.append([ticker, "EXIT"])
 
-            in_trade = False
-            entry_date = None
+            # Trade wird geschlossen, nächster ENTRY wieder erlaubt
+            in_trade    = False
+            entry_price = None
+            entry_date  = None
+            tp1_done    = False
+            tp2_done    = False
             continue
 
-        # ---------------------------------
-        # TP2 → +20% ggü. Vortag (nur einmal)
-        if (not tp2_done) and (c_close >= p_close * 1.20):
-            tp2_done = True
-            if date.date() == last_date:
-                signals_today.append([ticker, "TP2"])
+        # ====================================================
+        # TP2 = +80% Gewinn seit Entry (nur einmal pro Trade)
+        # ====================================================
+        if in_trade and (entry_price is not None) and (not tp2_done):
+            if close >= entry_price * 1.80:
+                tp2_done = True
+                if date.date() == last_date:
+                    signals_today.append([ticker, "TP2"])
 
-        # ---------------------------------
-        # TP1 → +10% ggü. Vortag (nur einmal)
-        elif (not tp1_done) and (c_close >= p_close * 1.10):
-            tp1_done = True
-            if date.date() == last_date:
-                signals_today.append([ticker, "TP1"])
+        # ====================================================
+        # TP1 = +35% Gewinn seit Entry (nur einmal pro Trade)
+        # ====================================================
+        if in_trade and (entry_price is not None) and (not tp1_done):
+            if close >= entry_price * 1.35:
+                tp1_done = True
+                if date.date() == last_date:
+                    signals_today.append([ticker, "TP1"])
 
     return signals_today
 
@@ -216,10 +237,10 @@ Ich habe heute ✅ *{checked_count} Aktien* für dich gescannt
 📈 *ENTRY Signale:*
 {chr(10).join(entry_list) if entry_list else "Keine"}
 
-📊 *TP1:*
+📊 *TP1 (35% Gewinn seit Entry):*
 {chr(10).join(tp1_list) if tp1_list else "Keine"}
 
-🚀 *TP2:*
+🚀 *TP2 (80% Gewinn seit Entry):*
 {chr(10).join(tp2_list) if tp2_list else "Keine"}
 
 📉 *EXIT Signale:*
