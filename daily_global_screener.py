@@ -190,7 +190,7 @@ def process_ticker_daily(ticker):
         # TP2 = +80% Gewinn seit Entry (nur einmal pro Trade)
         # ====================================================
         if in_trade and (entry_price is not None) and (not tp2_done):
-            if close >= entry_price * 1.80:
+            if close >= entry_price * 8:
                 tp2_done = True
                 if date.date() == last_date:
                     signals_today.append([ticker, "TP2"])
@@ -199,7 +199,7 @@ def process_ticker_daily(ticker):
         # TP1 = +35% Gewinn seit Entry (nur einmal pro Trade)
         # ====================================================
         if in_trade and (entry_price is not None) and (not tp1_done):
-            if close >= entry_price * 1.35:
+            if close >= entry_price * 3,5:
                 tp1_done = True
                 if date.date() == last_date:
                     signals_today.append([ticker, "TP1"])
@@ -267,3 +267,4 @@ print("GLOBAL SCREENER FERTIG")
 print("Gescannt:", checked_count)
 print("Signale:", len(signals_df))
 print("====================================\n")
+
