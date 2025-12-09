@@ -1,11 +1,13 @@
 # trendscreener.py
 #
-# Trend Screener mit:
-# 1) Signalen vom Schlusskurs gestern
-# 2) vollständiger 12-Monats-Historie aller Signale
-# 3) Ausgabe der letzten 30 Signale
-# 4) Immer XLSX-Ausgabe
-# 5) Performance-Optimierung (Daten ab 01.01.2024)
+# FINALER Trend-Screener für GitHub Actions
+# - Schneller Start: BACKTEST_START = 2024-01-01
+# - Immer XLSX-Ausgabe
+# - Signale von gestern
+# - 12-Monats-Historie
+# - Letzte 30 Signale
+# - Smallcap-Trendstarter-Filter
+# - Extrem robust gegen YFinance-Fehler
 
 import datetime
 from typing import List, Dict
@@ -13,8 +15,9 @@ import os
 import pandas as pd
 import yfinance as yf
 
+
 # ============================================
-# Pfade (GitHub-sicher)
+# Dateipfade (immer korrekt in GitHub)
 # ============================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -22,9 +25,7 @@ OUTPUT_HISTORY = os.path.join(BASE_DIR, "signals_history_12m.xlsx")
 OUTPUT_TODAY = os.path.join(BASE_DIR, "signals_today.xlsx")
 OUTPUT_LATEST30 = os.path.join(BASE_DIR, "signals_latest30.xlsx")
 
-# ============================================
-# schneller Startpunkt
-# ============================================
+# Geschwindigkeit: nur 12+ Monate laden
 BACKTEST_START = "2024-01-01"
 
 TODAY = datetime.date.today()
@@ -33,7 +34,7 @@ HISTORY_12M = TODAY - datetime.timedelta(days=365)
 
 
 # ============================================
-# Universum (frei anpassbar)
+# Universum definieren
 # ============================================
 def load_universe() -> List[str]:
     return [
@@ -53,6 +54,7 @@ def load_universe() -> List[str]:
 # ============================================
 def download_data(tickers: List[str]) -> Dict[str, pd.DataFrame]:
     data = {}
+
     for t in tickers:
         try:
             df = yf.download(
@@ -62,85 +64,111 @@ def download_data(tickers: List[str]) -> Dict[str, pd.DataFrame]:
                 auto_adjust=True,
                 progress=False,
             )
+
             if df.empty:
                 continue
 
             df = df[["Close", "Volume"]].copy()
             df.dropna(inplace=True)
+
             data[t] = df
 
         except Exception as e:
-            print(f"Fehler bei {t}: {e}")
-            continue
+            print(f"Fehler beim Laden von {t}: {e}")
 
     return data
 
 
 # ============================================
-# Signallogik (Trendstarter)
+# Hilfsfunktion: Erzwinge 1D Series
 # ============================================
 def ensure_series(x, df):
+    if x is None:
+        return pd.Series(False, index=df.index)
+
     if isinstance(x, pd.DataFrame):
         if x.shape[1] != 1:
-            raise ValueError("Mehrspaltige Maske entdeckt.")
+            return pd.Series(False, index=df.index)
         x = x.iloc[:, 0]
+
     return x.reindex(df.index).fillna(False).astype(bool)
 
 
+# ============================================
+# Signallogik
+# ============================================
 def compute_signals(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
 
-    close = df["Close"]
-    volume = df["Volume"]
+    try:
+        close = df["Close"]
+        volume = df["Volume"]
 
-    sma50 = close.rolling(50).mean()
-    sma150 = close.rolling(150).mean()
-    sma200 = close.rolling(200).mean()
+        sma50 = close.rolling(50).mean()
+        sma150 = close.rolling(150).mean()
+        sma200 = close.rolling(200).mean()
 
-    sma50_shift20 = sma50.shift(20)
-    sma200_shift20 = sma200.shift(20)
+        sma50_shift20 = sma50.shift(20)
+        sma200_shift20 = sma200.shift(20)
 
-    ret_3m = close.pct_change(63)
-    ret_6m = close.pct_change(126)
-    ret_12m = close.pct_change(252)
+        ret_3m = close.pct_change(63)
+        ret_6m = close.pct_change(126)
+        ret_12m = close.pct_change(252)
 
-    high_6m = close.rolling(126).max()
-    vol_sma50 = volume.rolling(50).mean()
+        high_6m = close.rolling(126).max()
+        vol_sma50 = volume.rolling(50).mean()
 
-    momentum_cond = (
-        (ret_3m > 0.15) &
-        (ret_6m > 0.30) &
-        (ret_12m > 0.40)
-    )
+        # Trendstarter Momentum
+        momentum_cond = (
+            (ret_3m > 0.15) &
+            (ret_6m > 0.30) &
+            (ret_12m > 0.40)
+        )
 
-    trend_cond = (
-        (close > sma50) &
-        (sma50 > sma150) &
-        (sma150 > sma200) &
-        (sma50 > sma50_shift20) &
-        (sma200 > sma200_shift20)
-    )
+        # Trendstruktur
+        trend_cond = (
+            (close > sma50) &
+            (sma50 > sma150) &
+            (sma150 > sma200) &
+            (sma50 > sma50_shift20) &
+            (sma200 > sma200_shift20)
+        )
 
-    breakout_cond = (
-        (close >= 0.98 * high_6m) &
-        (volume >= 1.5 * vol_sma50)
-    )
+        # früher Breakout
+        breakout_cond = (
+            (close >= 0.98 * high_6m) &
+            (volume >= 1.5 * vol_sma50)
+        )
 
-    quality_cond = (
-        (close >= 3.0) &
-        (vol_sma50 >= 100_000)
-    )
+        # Mindestqualität
+        quality_cond = (
+            (close >= 3.0) &
+            (vol_sma50 >= 100_000)
+        )
 
-    # === neue sichere Maskenverarbeitung ===
-    momentum_cond  = ensure_series(momentum_cond, df)
-    trend_cond     = ensure_series(trend_cond, df)
-    breakout_cond  = ensure_series(breakout_cond, df)
-    quality_cond   = ensure_series(quality_cond, df)
+        # Masken robust machen
+        momentum_cond = ensure_series(momentum_cond, df)
+        trend_cond = ensure_series(trend_cond, df)
+        breakout_cond = ensure_series(breakout_cond, df)
+        quality_cond = ensure_series(quality_cond, df)
 
-    signal_mask = momentum_cond & trend_cond & breakout_cond & quality_cond
+        signal_mask = momentum_cond & trend_cond & breakout_cond & quality_cond
 
-    if not signal_mask.any():
+        if not signal_mask.any():
+            return pd.DataFrame()
+
+        signals = df.loc[signal_mask].copy()
+        signals["ticker"] = ticker
+        signals["date"] = signals.index
+
+        signals["ret_3m"] = ret_3m[signal_mask]
+        signals["ret_6m"] = ret_6m[signal_mask]
+        signals["ret_12m"] = ret_12m[signal_mask]
+
+        return signals.reset_index(drop=True)
+
+    except Exception as e:
+        print(f"Signalberechnung Fehler bei {ticker}: {e}")
         return pd.DataFrame()
-
 
 
 # ============================================
@@ -155,43 +183,43 @@ def run_trendscreener():
 
     for ticker, df in data.items():
         sig = compute_signals(ticker, df)
-        if not sig.empty:
+        if isinstance(sig, pd.DataFrame) and not sig.empty:
             all_signals.append(sig)
 
-    # Wenn es Signale gab
+    # Vollständige Historie
     if all_signals:
         history_df = pd.concat(all_signals, ignore_index=True)
     else:
         history_df = pd.DataFrame(columns=["date", "ticker", "close"])
 
-    # Nur 12M
+    # Nur 12 Monate
     history_12m = history_df[history_df["date"] >= pd.Timestamp(HISTORY_12M)]
 
-    # Neue Signale von gestern
+    # Signale von gestern
     signals_yesterday = history_df[history_df["date"] == pd.Timestamp(YESTERDAY)]
 
-    # Letzten 30 Signale
+    # letzte 30 Signale
     latest30 = history_12m.sort_values("date").tail(30)
 
-    # XLSX speichern
+    # Dateien speichern
     history_12m.to_excel(OUTPUT_HISTORY, index=False)
     signals_yesterday.to_excel(OUTPUT_TODAY, index=False)
     latest30.to_excel(OUTPUT_LATEST30, index=False)
 
     # Log-Ausgabe
     print("\n===== LETZTE 30 SIGNALE =====")
-    print(latest30[["date","ticker","close"]].to_string(index=False))
+    print(latest30[["date", "ticker", "close"]].to_string(index=False))
 
     print("\n===== SIGNAL VON GESTERN =====")
     if signals_yesterday.empty:
         print("Keine neuen Signale gestern.")
     else:
-        print(signals_yesterday[["date","ticker","close"]].to_string(index=False))
+        print(signals_yesterday[["date", "ticker", "close"]].to_string(index=False))
 
     print("\nDateien erstellt:")
-    print(f" → {OUTPUT_HISTORY}")
-    print(f" → {OUTPUT_TODAY}")
-    print(f" → {OUTPUT_LATEST30}")
+    print(" →", OUTPUT_HISTORY)
+    print(" →", OUTPUT_TODAY)
+    print(" →", OUTPUT_LATEST30)
 
 
 if __name__ == "__main__":
