@@ -32,3 +32,7 @@ jobs:
           name: trendscreener-xlsx
           path: ${{ github.workspace }}
 
+print("Working directory:", os.getcwd())
+print("Saved files:")
+print(os.listdir(BASE_DIR))
+
