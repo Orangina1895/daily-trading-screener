@@ -1,9 +1,9 @@
-name: Daily Trading Screener
+name: Trend Screener
 
 on:
-  workflow_dispatch:        # manueller Start-Button
+  workflow_dispatch:        # Manueller Start-Button
   schedule:
-    - cron: "0 6 * * 1-5"   # optional: Mo–Fr 06:00 UTC
+    - cron: "0 6 * * 1-5"   # optional: Mo–Fr 06:00 UTC (entfernbar)
 
 jobs:
   run-screener:
@@ -25,15 +25,12 @@ jobs:
 
       - name: Run Trend Screener
         run: |
-          echo "Arbeitsverzeichnis:"
-          pwd
-          ls
           python trendscreener.py
-          echo "Dateien nach Lauf:"
-          ls
+          echo "Nach Script:"
+          ls -la
 
       - name: Upload screener results
         uses: actions/upload-artifact@v4
         with:
-          name: screener-output
+          name: trend-screener-output
           path: ${{ github.workspace }}/*.xlsx
