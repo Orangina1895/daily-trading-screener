@@ -1,34 +1,39 @@
-name: Daily Trend Screener
+name: Daily Trading Screener
 
 on:
-  workflow_dispatch:        # <<< aktiviert den manuellen Start-Button
+  workflow_dispatch:        # manueller Start-Button
   schedule:
-    - cron: "0 6 * * 1-5"
+    - cron: "0 6 * * 1-5"   # optional: Mo–Fr 06:00 UTC
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install yfinance pandas openpyxl numpy
+          python -m pip install --upgrade pip
+          pip install pandas yfinance openpyxl
 
-      - name: Run screener
-        run: python trendscreener.py
+      - name: Run Trend Screener
+        run: |
+          echo "Arbeitsverzeichnis:"
+          pwd
+          ls
+          python trendscreener.py
+          echo "Dateien nach Lauf:"
+          ls
 
-            - name: Upload screener results
+      - name: Upload screener results
         uses: actions/upload-artifact@v4
         with:
           name: screener-output
           path: ${{ github.workspace }}/*.xlsx
-
