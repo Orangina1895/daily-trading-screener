@@ -1,38 +1,40 @@
-name: Trendscreener
+name: Daily Trend Screener
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:         # Manuell startbar
   schedule:
-    - cron: "0 6 * * 1-5"
+    - cron: "0 6 * * 1-5"    # Optional: Mo–Fr um 06:00 UTC
 
 jobs:
-  run-trendscreener:
+  run-screener:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install yfinance pandas openpyxl
+          python -m pip install --upgrade pip
+          pip install yfinance pandas openpyxl numpy
 
-      - name: Run Screener
-        run: python trendscreener.py
+      - name: Run Trend Screener
+        run: |
+          echo "Arbeitsverzeichnis:"
+          pwd
+          echo "Dateien im Repo:"
+          ls -R
+          python trendscreener.py
+          echo "Dateien nach Screener:"
+          ls -R
 
-            - name: Upload XLSX results
+      - name: Upload XLSX results
         uses: actions/upload-artifact@v4
         with:
-          name: trendscreener-xlsx
-          path: ${{ github.workspace }}
-
-print("Working directory:", os.getcwd())
-print("Saved files:")
-print(os.listdir(BASE_DIR))
-
+          name: screener-results
+          path: ${{ github.workspace }}   # durchsucht komplettes Repo
