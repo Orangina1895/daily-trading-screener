@@ -1,40 +1,58 @@
-name: Daily Trend Screener
+def run_trendscreener():
+    print("===== DEBUG START =====")
 
-on:
-  workflow_dispatch:         # Manuell startbar
-  schedule:
-    - cron: "0 6 * * 1-5"    # Optional: Mo–Fr um 06:00 UTC
+    tickers = load_universe()
+    print("Tickers geladen:", len(tickers))
 
-jobs:
-  run-screener:
-    runs-on: ubuntu-latest
+    data = download_data(tickers)
+    print("Daten geladen:", len(data), "Ticker")
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    all_signals = []
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+    for ticker, df in data.items():
+        sig = compute_signals_for_ticker(ticker, df)
+        if not sig.empty:
+            print(f"Signal gefunden für {ticker}: {len(sig)} Zeilen")
+            all_signals.append(sig)
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install yfinance pandas openpyxl numpy
+    # Immer DataFrame erzeugen
+    if all_signals:
+        signals_df = pd.concat(all_signals, ignore_index=True)
+        signals_df.sort_values("date", inplace=True)
+        print("Gesamtanzahl Signale:", len(signals_df))
+    else:
+        print("WARNUNG: Keine Signale gefunden — trotzdem werden XLSX-Dateien erzeugt.")
+        signals_df = pd.DataFrame(
+            columns=[
+                "date","ticker","close",
+                "ret_3m","ret_6m","ret_12m",
+                "sma50","sma150","sma200",
+                "volume","vol_sma50"
+            ]
+        )
 
-      - name: Run Trend Screener
-        run: |
-          echo "Arbeitsverzeichnis:"
-          pwd
-          echo "Dateien im Repo:"
-          ls -R
-          python trendscreener.py
-          echo "Dateien nach Screener:"
-          ls -R
+    print("\nVersuche XLSX-Dateien zu speichern …")
+    print("Output FULL:", OUTPUT_FULL)
+    print("Output LATEST30:", OUTPUT_LATEST30)
 
-      - name: Upload XLSX results
-        uses: actions/upload-artifact@v4
-        with:
-          name: screener-results
-          path: ${{ github.workspace }}   # durchsucht komplettes Repo
+    # Dateien speichern
+    try:
+        signals_df.to_excel(OUTPUT_FULL, index=False)
+        print("FULL gespeichert.")
+    except Exception as e:
+        print("FEHLER beim Speichern FULL:", e)
+
+    try:
+        latest30 = signals_df.tail(30).copy()
+        latest30.to_excel(OUTPUT_LATEST30, index=False)
+        print("LATEST30 gespeichert.")
+    except Exception as e:
+        print("FEHLER beim Speichern LATEST30:", e)
+
+    print("\n===== Dateien im Speicherpfad =====")
+    try:
+        print(os.listdir(BASE_DIR))
+    except Exception as e:
+        print("Ordner konnte nicht gelesen werden:", e)
+
+    print("===== DEBUG ENDE =====")
