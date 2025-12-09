@@ -1,58 +1,33 @@
-def run_trendscreener():
-    print("===== DEBUG START =====")
+name: Daily Trend Screener
 
-    tickers = load_universe()
-    print("Tickers geladen:", len(tickers))
+on:
+  workflow_dispatch:        # <<< aktiviert den manuellen Start-Button
+  schedule:
+    - cron: "0 6 * * 1-5"
 
-    data = download_data(tickers)
-    print("Daten geladen:", len(data), "Ticker")
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
 
-    all_signals = []
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    for ticker, df in data.items():
-        sig = compute_signals_for_ticker(ticker, df)
-        if not sig.empty:
-            print(f"Signal gefunden für {ticker}: {len(sig)} Zeilen")
-            all_signals.append(sig)
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-    # Immer DataFrame erzeugen
-    if all_signals:
-        signals_df = pd.concat(all_signals, ignore_index=True)
-        signals_df.sort_values("date", inplace=True)
-        print("Gesamtanzahl Signale:", len(signals_df))
-    else:
-        print("WARNUNG: Keine Signale gefunden — trotzdem werden XLSX-Dateien erzeugt.")
-        signals_df = pd.DataFrame(
-            columns=[
-                "date","ticker","close",
-                "ret_3m","ret_6m","ret_12m",
-                "sma50","sma150","sma200",
-                "volume","vol_sma50"
-            ]
-        )
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas openpyxl numpy
 
-    print("\nVersuche XLSX-Dateien zu speichern …")
-    print("Output FULL:", OUTPUT_FULL)
-    print("Output LATEST30:", OUTPUT_LATEST30)
+      - name: Run screener
+        run: python trendscreener.py
 
-    # Dateien speichern
-    try:
-        signals_df.to_excel(OUTPUT_FULL, index=False)
-        print("FULL gespeichert.")
-    except Exception as e:
-        print("FEHLER beim Speichern FULL:", e)
-
-    try:
-        latest30 = signals_df.tail(30).copy()
-        latest30.to_excel(OUTPUT_LATEST30, index=False)
-        print("LATEST30 gespeichert.")
-    except Exception as e:
-        print("FEHLER beim Speichern LATEST30:", e)
-
-    print("\n===== Dateien im Speicherpfad =====")
-    try:
-        print(os.listdir(BASE_DIR))
-    except Exception as e:
-        print("Ordner konnte nicht gelesen werden:", e)
-
-    print("===== DEBUG ENDE =====")
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: ${{ github.workspace }}
