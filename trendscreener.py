@@ -9,6 +9,12 @@ from typing import List, Dict
 import pandas as pd
 import yfinance as yf
 
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FULL = os.path.join(BASE_DIR, "trendscreener_signals_full.xlsx")
+OUTPUT_LATEST30 = os.path.join(BASE_DIR, "trendscreener_signals_latest30.xlsx")
+
 
 # ============================================
 # Parameter
