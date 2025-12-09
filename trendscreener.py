@@ -79,6 +79,14 @@ def download_data(tickers: List[str]) -> Dict[str, pd.DataFrame]:
 # ============================================
 # Signallogik (Trendstarter)
 # ============================================
+def ensure_series(x, df):
+    if isinstance(x, pd.DataFrame):
+        if x.shape[1] != 1:
+            raise ValueError("Mehrspaltige Maske entdeckt.")
+        x = x.iloc[:, 0]
+    return x.reindex(df.index).fillna(False).astype(bool)
+
+
 def compute_signals(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
 
     close = df["Close"]
@@ -98,14 +106,12 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
     high_6m = close.rolling(126).max()
     vol_sma50 = volume.rolling(50).mean()
 
-    # Trendstarter Momentum
     momentum_cond = (
         (ret_3m > 0.15) &
         (ret_6m > 0.30) &
         (ret_12m > 0.40)
     )
 
-    # Trendstruktur
     trend_cond = (
         (close > sma50) &
         (sma50 > sma150) &
@@ -114,33 +120,27 @@ def compute_signals(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
         (sma200 > sma200_shift20)
     )
 
-    # früher Breakout
     breakout_cond = (
         (close >= 0.98 * high_6m) &
         (volume >= 1.5 * vol_sma50)
     )
 
-    # Liquidität & Preisfilter (Smallcap-tauglich)
     quality_cond = (
         (close >= 3.0) &
         (vol_sma50 >= 100_000)
     )
 
+    # === neue sichere Maskenverarbeitung ===
+    momentum_cond  = ensure_series(momentum_cond, df)
+    trend_cond     = ensure_series(trend_cond, df)
+    breakout_cond  = ensure_series(breakout_cond, df)
+    quality_cond   = ensure_series(quality_cond, df)
+
     signal_mask = momentum_cond & trend_cond & breakout_cond & quality_cond
-    signal_mask = signal_mask.fillna(False)
 
     if not signal_mask.any():
         return pd.DataFrame()
 
-    signals = df.loc[signal_mask].copy()
-    signals["ticker"] = ticker
-    signals["date"] = signals.index
-
-    signals["ret_3m"] = ret_3m[signal_mask]
-    signals["ret_6m"] = ret_6m[signal_mask]
-    signals["ret_12m"] = ret_12m[signal_mask]
-
-    return signals.reset_index(drop=True)
 
 
 # ============================================
