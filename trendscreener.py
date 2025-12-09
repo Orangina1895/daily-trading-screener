@@ -1,10 +1,11 @@
 # trendscreener.py
 #
-# Finaler Trend-Screener für GitHub Actions
-# - IMMER XLSX-Ausgabe
-# - Smallcap-tauglicher Trendstarter-Screener
-# - zeigt die letzten 30 Signale
-# - 100 % GitHub-kompatibel
+# Trend Screener mit:
+# 1) Signalen vom Schlusskurs gestern
+# 2) vollständiger 12-Monats-Historie aller Signale
+# 3) Ausgabe der letzten 30 Signale
+# 4) Immer XLSX-Ausgabe
+# 5) Performance-Optimierung (Daten ab 01.01.2024)
 
 import datetime
 from typing import List, Dict
@@ -13,23 +14,28 @@ import pandas as pd
 import yfinance as yf
 
 # ============================================
-# Speicherpfade (GitHub-kompatibel)
+# Pfade (GitHub-sicher)
 # ============================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_FULL = os.path.join(BASE_DIR, "trendscreener_signals_full.xlsx")
-OUTPUT_LATEST30 = os.path.join(BASE_DIR, "trendscreener_signals_latest30.xlsx")
 
-BACKTEST_START = "2016-01-01"
-TODAY = datetime.date.today().isoformat()
+OUTPUT_HISTORY = os.path.join(BASE_DIR, "signals_history_12m.xlsx")
+OUTPUT_TODAY = os.path.join(BASE_DIR, "signals_today.xlsx")
+OUTPUT_LATEST30 = os.path.join(BASE_DIR, "signals_latest30.xlsx")
+
+# ============================================
+# schneller Startpunkt
+# ============================================
+BACKTEST_START = "2024-01-01"
+
+TODAY = datetime.date.today()
+YESTERDAY = TODAY - datetime.timedelta(days=1)
+HISTORY_12M = TODAY - datetime.timedelta(days=365)
 
 
 # ============================================
-# Universum der zu scannenden Titel
+# Universum (frei anpassbar)
 # ============================================
 def load_universe() -> List[str]:
-    """
-    Nasdaq + Trendstarter.
-    """
     return [
         "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","TSLA","AVGO","PEP",
         "COST","ADBE","CSCO","NFLX","AMD","INTC","AMGN","QCOM","TXN","SBUX",
@@ -43,78 +49,63 @@ def load_universe() -> List[str]:
 
 
 # ============================================
-# Datenabruf
+# Daten laden
 # ============================================
 def download_data(tickers: List[str]) -> Dict[str, pd.DataFrame]:
     data = {}
-
-    for ticker in tickers:
+    for t in tickers:
         try:
             df = yf.download(
-                ticker,
+                t,
                 start=BACKTEST_START,
-                end=TODAY,
+                end=TODAY + datetime.timedelta(days=1),
                 auto_adjust=True,
                 progress=False,
             )
-
-            if df is None or df.empty:
-                print(f"Überspringe {ticker}: keine Daten.")
-                continue
-
-            # MultiIndex abfangen
-            if isinstance(df.columns, pd.MultiIndex):
-                try:
-                    df = df["Close"].to_frame("Close").join(df["Volume"].to_frame("Volume"))
-                except:
-                    print(f"Überspringe {ticker}: MultiIndex defekt.")
-                    continue
-
-            if not {"Close", "Volume"}.issubset(df.columns):
-                print(f"Überspringe {ticker}: Close/Volume fehlen.")
+            if df.empty:
                 continue
 
             df = df[["Close", "Volume"]].copy()
             df.dropna(inplace=True)
-
-            if len(df) < 260:
-                print(f"Überspringe {ticker}: Historie zu kurz.")
-                continue
-
-            data[ticker] = df
+            data[t] = df
 
         except Exception as e:
-            print(f"Fehler bei {ticker}: {e}")
+            print(f"Fehler bei {t}: {e}")
+            continue
 
     return data
 
 
 # ============================================
-# Signal-Logik (Smallcap- & Trendstarter-tauglich)
+# Signallogik (Trendstarter)
 # ============================================
-def compute_signals_for_ticker(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
+def compute_signals(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
 
     close = df["Close"]
     volume = df["Volume"]
 
-    # Momentum (Smallcap-kompatibel)
-    ret_3m = close / close.shift(63) - 1
-    ret_6m = close / close.shift(126) - 1
-    ret_12m = close / close.shift(252) - 1
+    sma50 = close.rolling(50).mean()
+    sma150 = close.rolling(150).mean()
+    sma200 = close.rolling(200).mean()
 
+    sma50_shift20 = sma50.shift(20)
+    sma200_shift20 = sma200.shift(20)
+
+    ret_3m = close.pct_change(63)
+    ret_6m = close.pct_change(126)
+    ret_12m = close.pct_change(252)
+
+    high_6m = close.rolling(126).max()
+    vol_sma50 = volume.rolling(50).mean()
+
+    # Trendstarter Momentum
     momentum_cond = (
         (ret_3m > 0.15) &
         (ret_6m > 0.30) &
         (ret_12m > 0.40)
     )
 
-    # Trend
-    sma50 = close.rolling(50).mean()
-    sma150 = close.rolling(150).mean()
-    sma200 = close.rolling(200).mean()
-    sma50_shift20 = sma50.shift(20)
-    sma200_shift20 = sma200.shift(20)
-
+    # Trendstruktur
     trend_cond = (
         (close > sma50) &
         (sma50 > sma150) &
@@ -123,88 +114,84 @@ def compute_signals_for_ticker(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
         (sma200 > sma200_shift20)
     )
 
-    # Breakout früher zulassen
-    high_6m = close.rolling(126).max()
-    vol_sma50 = volume.rolling(50).mean()
-
+    # früher Breakout
     breakout_cond = (
-        (close >= high_6m * 0.98) &
+        (close >= 0.98 * high_6m) &
         (volume >= 1.5 * vol_sma50)
     )
 
-    # Smallcap-tauglicher Qualitätsfilter
+    # Liquidität & Preisfilter (Smallcap-tauglich)
     quality_cond = (
         (close >= 3.0) &
         (vol_sma50 >= 100_000)
     )
 
-    conds = [momentum_cond, trend_cond, breakout_cond, quality_cond]
-
-    signal_mask = pd.Series(True, index=df.index)
-    for cond in conds:
-        cond = cond.reindex(df.index).fillna(False)
-        signal_mask &= cond
+    signal_mask = momentum_cond & trend_cond & breakout_cond & quality_cond
+    signal_mask = signal_mask.fillna(False)
 
     if not signal_mask.any():
         return pd.DataFrame()
 
     signals = df.loc[signal_mask].copy()
+    signals["ticker"] = ticker
+    signals["date"] = signals.index
 
     signals["ret_3m"] = ret_3m[signal_mask]
     signals["ret_6m"] = ret_6m[signal_mask]
     signals["ret_12m"] = ret_12m[signal_mask]
-    signals["sma50"] = sma50[signal_mask]
-    signals["sma150"] = sma150[signal_mask]
-    signals["sma200"] = sma200[signal_mask]
-    signals["vol_sma50"] = vol_sma50[signal_mask]
 
-    signals.reset_index(inplace=True)
-    signals.rename(columns={"Date": "date"}, inplace=True)
-    signals.insert(1, "ticker", ticker)
-
-    return signals
+    return signals.reset_index(drop=True)
 
 
 # ============================================
-# Hauptfunktion – erzeugt IMMER XLSX-Dateien
+# Hauptfunktion
 # ============================================
 def run_trendscreener():
+
     tickers = load_universe()
     data = download_data(tickers)
 
     all_signals = []
 
     for ticker, df in data.items():
-        sig = compute_signals_for_ticker(ticker, df)
+        sig = compute_signals(ticker, df)
         if not sig.empty:
             all_signals.append(sig)
 
+    # Wenn es Signale gab
     if all_signals:
-        signals_df = pd.concat(all_signals, ignore_index=True)
-        signals_df.sort_values("date", inplace=True)
+        history_df = pd.concat(all_signals, ignore_index=True)
     else:
-        print("WARNUNG: Keine Signale gefunden – erzeuge leere XLSX-Dateien.")
-        signals_df = pd.DataFrame(
-            columns=[
-                "date","ticker","close",
-                "ret_3m","ret_6m","ret_12m",
-                "sma50","sma150","sma200",
-                "volume","vol_sma50",
-            ]
-        )
+        history_df = pd.DataFrame(columns=["date", "ticker", "close"])
 
-    # Dateien speichern (IMMER!)
-    signals_df.to_excel(OUTPUT_FULL, index=False)
+    # Nur 12M
+    history_12m = history_df[history_df["date"] >= pd.Timestamp(HISTORY_12M)]
 
-    latest30 = signals_df.tail(30).copy()
+    # Neue Signale von gestern
+    signals_yesterday = history_df[history_df["date"] == pd.Timestamp(YESTERDAY)]
+
+    # Letzten 30 Signale
+    latest30 = history_12m.sort_values("date").tail(30)
+
+    # XLSX speichern
+    history_12m.to_excel(OUTPUT_HISTORY, index=False)
+    signals_yesterday.to_excel(OUTPUT_TODAY, index=False)
     latest30.to_excel(OUTPUT_LATEST30, index=False)
 
-    print("\nLETZTE 30 SIGNALE:")
-    print(latest30.to_string(index=False))
+    # Log-Ausgabe
+    print("\n===== LETZTE 30 SIGNALE =====")
+    print(latest30[["date","ticker","close"]].to_string(index=False))
+
+    print("\n===== SIGNAL VON GESTERN =====")
+    if signals_yesterday.empty:
+        print("Keine neuen Signale gestern.")
+    else:
+        print(signals_yesterday[["date","ticker","close"]].to_string(index=False))
 
     print("\nDateien erstellt:")
-    print(" -", OUTPUT_FULL)
-    print(" -", OUTPUT_LATEST30)
+    print(f" → {OUTPUT_HISTORY}")
+    print(f" → {OUTPUT_TODAY}")
+    print(f" → {OUTPUT_LATEST30}")
 
 
 if __name__ == "__main__":
