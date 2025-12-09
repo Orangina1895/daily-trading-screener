@@ -26,10 +26,9 @@ jobs:
       - name: Run Screener
         run: python trendscreener.py
 
-      - name: Upload XLSX results
+            - name: Upload XLSX results
         uses: actions/upload-artifact@v4
         with:
           name: trendscreener-xlsx
-          path: |
-            trendscreener_signals_full.xlsx
-            trendscreener_signals_latest30.xlsx
+          path: ${{ github.workspace }}
+
