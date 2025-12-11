@@ -4,7 +4,7 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ==========================================================
 # 1. TICKER-UNIVERSUM (bereinigt)
@@ -37,24 +37,20 @@ OUTPUT_FILE = f"week_to_day_backtest_{timestamp}.xlsx"
 MISSING_FILE = f"missing_tickers_{timestamp}.xlsx"
 
 # ==========================================================
-# 3. INDICATORS (Weekly)
+# 3. INDICATORS (Weekly, sicher 1D)
 # ==========================================================
 
 def add_indicators(df):
 
-    # --- alle Spalten sauber in 1D konvertieren ---
     def to_1d(x):
         if isinstance(x, pd.DataFrame):
-            return x.iloc[:, 0].astype(float)
+            return x.iloc[:,0].astype(float)
         return x.astype(float)
 
     close = to_1d(df["Close"])
     high  = to_1d(df["High"])
     low   = to_1d(df["Low"])
 
-    # =========================
-    # EMAs und SMAs
-    # =========================
     df["ema50"]  = close.ewm(span=50).mean()
     df["ema100"] = close.ewm(span=100).mean()
     df["ema200"] = close.ewm(span=200).mean()
@@ -63,9 +59,6 @@ def add_indicators(df):
     df["sma50"]  = close.rolling(50).mean()
     df["sma200"] = close.rolling(200).mean()
 
-    # =========================
-    # ATR
-    # =========================
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low  - close.shift(1)).abs()
@@ -73,41 +66,28 @@ def add_indicators(df):
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr"] = tr.ewm(alpha=1/14).mean()
 
-    # =========================
-    # ADX
-    # =========================
     up   = high.diff()
     down = -low.diff()
 
-    plus_dm_raw  = np.where((up > down) & (up > 0), up, 0.0)
-    minus_dm_raw = np.where((down > up) & (down > 0), down, 0.0)
+    plus_dm  = np.where((up > down) & (up > 0), up, 0.0).reshape(-1,)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0).reshape(-1,)
 
-    # immer 1D sicherstellen
-    plus_dm  = pd.Series(plus_dm_raw.reshape(-1,), index=df.index)
-    minus_dm = pd.Series(minus_dm_raw.reshape(-1,), index=df.index)
+    plus = pd.Series(plus_dm, index=df.index).ewm(alpha=1/14).mean()
+    minus = pd.Series(minus_dm, index=df.index).ewm(alpha=1/14).mean()
 
-    atr = df["atr"]
-
-    plus  = plus_dm.ewm(alpha=1/14).mean()
-    minus = minus_dm.ewm(alpha=1/14).mean()
-
-    plus_di  = 100 * (plus  / atr)
-    minus_di = 100 * (minus / atr)
+    plus_di  = 100 * plus  / df["atr"]
+    minus_di = 100 * minus / df["atr"]
 
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     df["adx"] = dx.ewm(alpha=1/14).mean()
 
-    # =========================
-    # Trendstabilität (Slope)
-    # =========================
     df["slope"] = df["sma200"] - df["sma200"].shift(10)
 
     return df
 
 
-
 # ==========================================================
-# 4. STRATEGIE (Weekly Entry, Daily Exit)
+# 4. STRATEGIE (Weekly Entry → Daily Exit)
 # ==========================================================
 
 def run_strategy(df, ticker):
@@ -119,9 +99,7 @@ def run_strategy(df, ticker):
     cooldown = -1
     daily_df = None
 
-    # close flatten
-    close = df["Close"]
-    close = close.values.reshape(-1,)  # sicher 1D
+    close = df["Close"].values.reshape(-1,)  # immer 1D
 
     for i in range(len(df)):
         date = df.index[i]
@@ -129,19 +107,16 @@ def run_strategy(df, ticker):
         if date < BACKTEST_START:
             continue
 
-        # ==========================================================
-        # EXIT (Daily)
-        # ==========================================================
-                # ==========================================================
-        # EXIT (Daily)
-        # ==========================================================
+        # ----------------------------------------------------------
+        # EXIT DAILY
+        # ----------------------------------------------------------
         if position:
 
             if daily_df is None:
                 daily_df = yf.download(
                     ticker,
-                    start=entry_date - pd.Timedelta(days=3),
-                    end=EXIT_DATE,
+                    start=entry_date - timedelta(days=3),
+                    end=EXIT_DATE + timedelta(days=1),
                     interval="1d",
                     progress=False
                 )
@@ -149,28 +124,20 @@ def run_strategy(df, ticker):
                 if daily_df.empty:
                     continue
 
-                # close flatten
-                daily_df["Close"] = daily_df["Close"].astype(float)
-
-                # EMA sauber berechnen (immer 1D)
-                daily_close = daily_df["Close"].values.reshape(-1,)
+                daily_close = daily_df["Close"].astype(float).values.reshape(-1,)
+                daily_df["Close"] = daily_close
                 daily_df["ema50"]  = pd.Series(daily_close).ewm(span=50).mean().values
                 daily_df["ema100"] = pd.Series(daily_close).ewm(span=100).mean().values
                 daily_df["ema200"] = pd.Series(daily_close).ewm(span=200).mean().values
 
-                # Entry-Index sauber bestimmen
                 idx = daily_df.index.get_indexer([entry_date], method="bfill")[0]
                 daily_idx_entry = idx
 
-            # EXIT Check nur falls weekly-date <= letzter daily-date
             if date <= daily_df.index[-1]:
 
-                # Index mapping weekly → daily
                 j = daily_df.index.get_indexer([date], method="ffill")[0]
-
                 days_open = j - daily_idx_entry
 
-                # korrekter kritischer EMA
                 if days_open <= 50:
                     crit = float(daily_df["ema200"].iloc[j])
                 elif days_open <= 100:
@@ -178,10 +145,8 @@ def run_strategy(df, ticker):
                 else:
                     crit = float(daily_df["ema50"].iloc[j])
 
-                # Tages-Schlusskurs holen (IMMER float)
                 day_close = float(daily_df["Close"].iloc[j])
 
-                # EXIT auslösen
                 if day_close < crit:
 
                     exit_price = float(close[i])
@@ -196,10 +161,9 @@ def run_strategy(df, ticker):
                     daily_df = None
                     continue
 
-
-        # ==========================================================
-        # ENTRY (Weekly)
-        # ==========================================================
+        # ----------------------------------------------------------
+        # ENTRY WEEKLY
+        # ----------------------------------------------------------
         if not position and i > cooldown:
 
             if (
@@ -213,20 +177,38 @@ def run_strategy(df, ticker):
                 position = True
                 entry_price = float(close[i])
                 entry_date = date
-
                 rows.append([ticker, "ENTRY", entry_date, entry_price, ""])
                 daily_df = None
 
     # ==========================================================
-    # FORCED EXIT
+    # ZWANGS-EXIT GESTERN (immer, wenn Position offen ist)
     # ==========================================================
     if position:
-        exit_price = float(close[-1])
-        ret_pct = (exit_price / entry_price - 1) * 100
-        rows.append([ticker, "EXIT", EXIT_DATE, exit_price, ret_pct])
+
+        forced = yf.download(
+            ticker,
+            start=EXIT_DATE - timedelta(days=3),
+            end=EXIT_DATE + timedelta(days=1),
+            interval="1d",
+            progress=False
+        )
+
+        if not forced.empty:
+            forced_price = float(forced["Close"].iloc[-1])
+        else:
+            forced_price = float(close[-1])
+
+        ret_pct = (forced_price / entry_price - 1) * 100
+
+        rows.append([
+            ticker,
+            "EXIT (FORCED)",
+            EXIT_DATE,
+            forced_price,
+            ret_pct
+        ])
 
     return rows
-
 
 
 # ==========================================================
@@ -260,7 +242,8 @@ def main():
         all_rows.extend(trades)
 
     if not all_rows:
-        print("❌ Keine Trades erzeugt.")
+        print("⚠️ Keine Trades erzeugt – leere Excel wird erstellt.")
+        pd.DataFrame(columns=["Ticker","Type","Date","Price","Return_%"]).to_excel(OUTPUT_FILE, index=False)
         return
 
     out = pd.DataFrame(all_rows, columns=["Ticker","Type","Date","Price","Return_%"])
@@ -274,5 +257,4 @@ def main():
         print(f"Fehlende Ticker gespeichert in: {MISSING_FILE}")
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main
