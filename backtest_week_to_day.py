@@ -132,9 +132,11 @@ def run_strategy(df, ticker):
         # ==========================================================
         # EXIT (Daily)
         # ==========================================================
+                # ==========================================================
+        # EXIT (Daily)
+        # ==========================================================
         if position:
 
-            # Daily-Daten nur einmal laden
             if daily_df is None:
                 daily_df = yf.download(
                     ticker,
@@ -147,31 +149,40 @@ def run_strategy(df, ticker):
                 if daily_df.empty:
                     continue
 
-                # flatten daily close
+                # close flatten
                 daily_df["Close"] = daily_df["Close"].astype(float)
 
-                daily_df["ema50"]  = daily_df["Close"].ewm(span=50).mean()
-                daily_df["ema100"] = daily_df["Close"].ewm(span=100).mean()
-                daily_df["ema200"] = daily_df["Close"].ewm(span=200).mean()
+                # EMA sauber berechnen (immer 1D)
+                daily_close = daily_df["Close"].values.reshape(-1,)
+                daily_df["ema50"]  = pd.Series(daily_close).ewm(span=50).mean().values
+                daily_df["ema100"] = pd.Series(daily_close).ewm(span=100).mean().values
+                daily_df["ema200"] = pd.Series(daily_close).ewm(span=200).mean().values
 
-                # entry index bestimmen (ohne get_loc)
+                # Entry-Index sauber bestimmen
                 idx = daily_df.index.get_indexer([entry_date], method="bfill")[0]
                 daily_idx_entry = idx
 
-            # Nur wenn weekly-Date im daily-Index liegt
+            # EXIT Check nur falls weekly-date <= letzter daily-date
             if date <= daily_df.index[-1]:
 
+                # Index mapping weekly → daily
                 j = daily_df.index.get_indexer([date], method="ffill")[0]
+
                 days_open = j - daily_idx_entry
 
+                # korrekter kritischer EMA
                 if days_open <= 50:
-                    crit = daily_df["ema200"].iloc[j]
+                    crit = float(daily_df["ema200"].iloc[j])
                 elif days_open <= 100:
-                    crit = daily_df["ema100"].iloc[j]
+                    crit = float(daily_df["ema100"].iloc[j])
                 else:
-                    crit = daily_df["ema50"].iloc[j]
+                    crit = float(daily_df["ema50"].iloc[j])
 
-                if daily_df["Close"].iloc[j] < crit:
+                # Tages-Schlusskurs holen (IMMER float)
+                day_close = float(daily_df["Close"].iloc[j])
+
+                # EXIT auslösen
+                if day_close < crit:
 
                     exit_price = float(close[i])
                     ret_pct = (exit_price / entry_price - 1) * 100
@@ -184,6 +195,7 @@ def run_strategy(df, ticker):
                     cooldown = i + 15
                     daily_df = None
                     continue
+
 
         # ==========================================================
         # ENTRY (Weekly)
