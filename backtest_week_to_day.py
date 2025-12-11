@@ -29,7 +29,7 @@ print(f"Universum geladen: {len(TICKERS)} Aktien")
 # ==========================================================
 
 HISTORY_START = pd.Timestamp("2018-01-01")
-BACKTEST_START = pd.Timestamp("2016-01-01")
+BACKTEST_START = pd.Timestamp("2010-01-01")
 EXIT_DATE = pd.Timestamp.today().normalize()
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
