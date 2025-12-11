@@ -7,7 +7,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 
 # ==========================================================
-# 1. TICKER-UNIVERSUM (bereinigt)
+# 1. TICKER-UNIVERSUM
 # ==========================================================
 
 TICKERS = [
@@ -28,16 +28,16 @@ print(f"Universum geladen: {len(TICKERS)} Aktien")
 # 2. ZEITRAUM
 # ==========================================================
 
+BACKTEST_START = pd.Timestamp("2010-01-01")
 HISTORY_START = pd.Timestamp("2010-01-01")
-BACKTEST_START = pd.Timestamp("2018-01-01")
 EXIT_DATE = pd.Timestamp.today().normalize()
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUTPUT_FILE = f"week_to_day_backtest_{timestamp}.xlsx"
+OUTPUT_FILE = f"daily_backtest_{timestamp}.xlsx"
 MISSING_FILE = f"missing_tickers_{timestamp}.xlsx"
 
 # ==========================================================
-# 3. INDICATORS (Weekly, sicher 1D)
+# 3. INDICATORS (DAILY)
 # ==========================================================
 
 def add_indicators(df):
@@ -59,13 +59,14 @@ def add_indicators(df):
     df["sma50"]  = close.rolling(50).mean()
     df["sma200"] = close.rolling(200).mean()
 
+    # ATR
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low  - close.shift(1)).abs()
-
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr"] = tr.ewm(alpha=1/14).mean()
 
+    # ADX
     up   = high.diff()
     down = -low.diff()
 
@@ -81,25 +82,25 @@ def add_indicators(df):
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     df["adx"] = dx.ewm(alpha=1/14).mean()
 
+    # Trendstabilität
     df["slope"] = df["sma200"] - df["sma200"].shift(10)
 
     return df
 
 
 # ==========================================================
-# 4. STRATEGIE (Weekly Entry → Daily Exit)
+# 4. DAILY ENTRY + DAILY EXIT
 # ==========================================================
 
 def run_strategy(df, ticker):
 
     rows = []
     position = False
-    entry_price = 0.0
+    entry_price = 0
     entry_date = None
-    cooldown = -1
-    daily_df = None
+    cooldown_until = -1
 
-    close = df["Close"].values.reshape(-1,)  # immer 1D
+    close = df["Close"].astype(float).values.reshape(-1,)
 
     for i in range(len(df)):
         date = df.index[i]
@@ -108,63 +109,34 @@ def run_strategy(df, ticker):
             continue
 
         # ----------------------------------------------------------
-        # EXIT DAILY
+        # EXIT-LOGIK
         # ----------------------------------------------------------
         if position:
 
-            if daily_df is None:
-                daily_df = yf.download(
-                    ticker,
-                    start=entry_date - timedelta(days=3),
-                    end=EXIT_DATE + timedelta(days=1),
-                    interval="1d",
-                    progress=False
-                )
+            days_open = (date - entry_date).days
 
-                if daily_df.empty:
-                    continue
+            if days_open <= 50:
+                crit = df["ema200"].iloc[i]
+            elif days_open <= 100:
+                crit = df["ema100"].iloc[i]
+            else:
+                crit = df["ema50"].iloc[i]
 
-                daily_close = daily_df["Close"].astype(float).values.reshape(-1,)
-                daily_df["Close"] = daily_close
-                daily_df["ema50"]  = pd.Series(daily_close).ewm(span=50).mean().values
-                daily_df["ema100"] = pd.Series(daily_close).ewm(span=100).mean().values
-                daily_df["ema200"] = pd.Series(daily_close).ewm(span=200).mean().values
+            if close[i] < crit:
+                exit_price = close[i]
+                ret = (exit_price / entry_price - 1) * 100
+                rows.append([ticker, "EXIT", date, exit_price, ret])
 
-                idx = daily_df.index.get_indexer([entry_date], method="bfill")[0]
-                daily_idx_entry = idx
-
-            if date <= daily_df.index[-1]:
-
-                j = daily_df.index.get_indexer([date], method="ffill")[0]
-                days_open = j - daily_idx_entry
-
-                if days_open <= 50:
-                    crit = float(daily_df["ema200"].iloc[j])
-                elif days_open <= 100:
-                    crit = float(daily_df["ema100"].iloc[j])
-                else:
-                    crit = float(daily_df["ema50"].iloc[j])
-
-                day_close = float(daily_df["Close"].iloc[j])
-
-                if day_close < crit:
-
-                    exit_price = float(close[i])
-                    ret_pct = (exit_price / entry_price - 1) * 100
-
-                    rows.append([ticker, "EXIT", date, exit_price, ret_pct])
-
-                    position = False
-                    entry_price = 0.0
-                    entry_date = None
-                    cooldown = i + 15
-                    daily_df = None
-                    continue
+                position = False
+                cooldown_until = i + 15
+                entry_price = 0
+                entry_date = None
+                continue
 
         # ----------------------------------------------------------
-        # ENTRY WEEKLY
+        # ENTRY-LOGIK (DAILY)
         # ----------------------------------------------------------
-        if not position and i > cooldown:
+        if not position and i > cooldown_until:
 
             if (
                 close[i] > df["sma200"].iloc[i] and
@@ -175,19 +147,18 @@ def run_strategy(df, ticker):
                 df["atr"].iloc[i] / close[i] > 0.005
             ):
                 position = True
-                entry_price = float(close[i])
+                entry_price = close[i]
                 entry_date = date
-                rows.append([ticker, "ENTRY", entry_date, entry_price, ""])
-                daily_df = None
+                rows.append([ticker, "ENTRY", date, entry_price, ""])
+                continue
 
-    # ==========================================================
-    # ZWANGS-EXIT GESTERN (immer, wenn Position offen ist)
-    # ==========================================================
+    # ----------------------------------------------------------
+    # FORCED EXIT (gestern)
+    # ----------------------------------------------------------
     if position:
-
         forced = yf.download(
             ticker,
-            start=EXIT_DATE - timedelta(days=3),
+            start=EXIT_DATE - timedelta(days=5),
             end=EXIT_DATE + timedelta(days=1),
             interval="1d",
             progress=False
@@ -196,24 +167,13 @@ def run_strategy(df, ticker):
         if not forced.empty:
             forced_price = float(forced["Close"].iloc[-1])
         else:
-            forced_price = float(close[-1])
+            forced_price = close[-1]
 
-        ret_pct = (forced_price / entry_price - 1) * 100
-
-        rows.append([
-            ticker,
-            "EXIT (FORCED)",
-            EXIT_DATE,
-            forced_price,
-            ret_pct
-        ])
+        ret = (forced_price / entry_price - 1) * 100
+        rows.append([ticker, "EXIT (FORCED)", EXIT_DATE, forced_price, ret])
 
     return rows
 
-
-# ==========================================================
-# 5. MAIN
-# ==========================================================
 
 # ==========================================================
 # 5. MAIN
@@ -232,7 +192,7 @@ def main():
             ticker,
             start=HISTORY_START,
             end=EXIT_DATE,
-            interval="1wk",
+            interval="1d",
             progress=False
         )
 
@@ -245,6 +205,9 @@ def main():
         trades = run_strategy(df, ticker)
         all_rows.extend(trades)
 
+    # ------------------------------------------------------
+    # Excel sicher erzeugen
+    # ------------------------------------------------------
     if not all_rows:
         print("⚠️ Keine Trades erzeugt – leere Excel wird erstellt.")
         pd.DataFrame(columns=["Ticker","Type","Date","Price","Return_%"]).to_excel(OUTPUT_FILE, index=False)
@@ -263,4 +226,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
