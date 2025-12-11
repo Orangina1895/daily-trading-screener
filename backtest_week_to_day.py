@@ -41,44 +41,69 @@ MISSING_FILE = f"missing_tickers_{timestamp}.xlsx"
 # ==========================================================
 
 def add_indicators(df):
-    close = df["Close"].astype(float)
-    high = df["High"].astype(float)
-    low = df["Low"].astype(float)
 
-    df["ema50"] = close.ewm(span=50).mean()
+    # --- alle Spalten sauber in 1D konvertieren ---
+    def to_1d(x):
+        if isinstance(x, pd.DataFrame):
+            return x.iloc[:, 0].astype(float)
+        return x.astype(float)
+
+    close = to_1d(df["Close"])
+    high  = to_1d(df["High"])
+    low   = to_1d(df["Low"])
+
+    # =========================
+    # EMAs und SMAs
+    # =========================
+    df["ema50"]  = close.ewm(span=50).mean()
     df["ema100"] = close.ewm(span=100).mean()
     df["ema200"] = close.ewm(span=200).mean()
 
-    df["sma20"] = close.rolling(20).mean()
-    df["sma50"] = close.rolling(50).mean()
+    df["sma20"]  = close.rolling(20).mean()
+    df["sma50"]  = close.rolling(50).mean()
     df["sma200"] = close.rolling(200).mean()
 
+    # =========================
     # ATR
+    # =========================
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
+    tr3 = (low  - close.shift(1)).abs()
+
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr"] = tr.ewm(alpha=1/14).mean()
 
+    # =========================
     # ADX
-    up = high.diff()
+    # =========================
+    up   = high.diff()
     down = -low.diff()
 
-    plus_dm = np.where((up > down) & (up > 0), up, 0)
-    minus_dm = np.where((down > up) & (down > 0), down, 0)
+    plus_dm_raw  = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm_raw = np.where((down > up) & (down > 0), down, 0.0)
+
+    # immer 1D sicherstellen
+    plus_dm  = pd.Series(plus_dm_raw.reshape(-1,), index=df.index)
+    minus_dm = pd.Series(minus_dm_raw.reshape(-1,), index=df.index)
 
     atr = df["atr"]
-    plus = pd.Series(plus_dm, index=df.index).ewm(alpha=1/14).mean()
-    minus = pd.Series(minus_dm, index=df.index).ewm(alpha=1/14).mean()
 
-    plus_di = 100 * (plus / atr)
+    plus  = plus_dm.ewm(alpha=1/14).mean()
+    minus = minus_dm.ewm(alpha=1/14).mean()
+
+    plus_di  = 100 * (plus  / atr)
     minus_di = 100 * (minus / atr)
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
 
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     df["adx"] = dx.ewm(alpha=1/14).mean()
+
+    # =========================
+    # Trendstabilität (Slope)
+    # =========================
     df["slope"] = df["sma200"] - df["sma200"].shift(10)
 
     return df
+
 
 
 # ==========================================================
