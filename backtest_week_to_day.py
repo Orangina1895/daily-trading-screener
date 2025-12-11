@@ -215,6 +215,10 @@ def run_strategy(df, ticker):
 # 5. MAIN
 # ==========================================================
 
+# ==========================================================
+# 5. MAIN
+# ==========================================================
+
 def main():
 
     all_rows = []
@@ -257,4 +261,6 @@ def main():
         print(f"Fehlende Ticker gespeichert in: {MISSING_FILE}")
 
 
-if __name__ == "__main
+if __name__ == "__main__":
+    main()
+
