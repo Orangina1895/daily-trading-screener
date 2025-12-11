@@ -1,9 +1,9 @@
-name: Run Backtest
+name: Run Backtest Week→Day
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 8 * * 1-5"   # täglich 09:00 CET
+    - cron: "0 7 * * 1-5"   # 08:00 deutscher Zeit
 
 jobs:
   backtest:
@@ -21,12 +21,12 @@ jobs:
         run: |
           pip install pandas yfinance openpyxl numpy
 
-      - name: Run Backtest
+      - name: Run Week→Day Backtest
         run: |
-          python backtest_signals.py
+          python backtest_week_to_day.py
 
       - name: Upload Excel results
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-output
+          name: backtest-week-to-day-output
           path: "*.xlsx"
