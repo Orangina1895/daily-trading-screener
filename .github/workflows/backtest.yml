@@ -1,0 +1,32 @@
+name: Run Backtest
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1-5"   # täglich 09:00 CET
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pandas yfinance openpyxl numpy
+
+      - name: Run Backtest
+        run: |
+          python backtest_signals.py
+
+      - name: Upload Excel results
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-output
+          path: "*.xlsx"
