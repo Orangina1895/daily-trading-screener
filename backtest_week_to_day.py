@@ -119,7 +119,9 @@ def run_strategy(df, ticker):
     cooldown = -1
     daily_df = None
 
-    close = df["Close"].values
+    # close flatten
+    close = df["Close"]
+    close = close.values.reshape(-1,)  # sicher 1D
 
     for i in range(len(df)):
         date = df.index[i]
@@ -132,33 +134,44 @@ def run_strategy(df, ticker):
         # ==========================================================
         if position:
 
+            # Daily-Daten nur einmal laden
             if daily_df is None:
                 daily_df = yf.download(
                     ticker,
-                    start=entry_date,
+                    start=entry_date - pd.Timedelta(days=3),
                     end=EXIT_DATE,
                     interval="1d",
                     progress=False
                 )
 
-                daily_df["ema50"] = daily_df["Close"].ewm(span=50).mean()
+                if daily_df.empty:
+                    continue
+
+                # flatten daily close
+                daily_df["Close"] = daily_df["Close"].astype(float)
+
+                daily_df["ema50"]  = daily_df["Close"].ewm(span=50).mean()
                 daily_df["ema100"] = daily_df["Close"].ewm(span=100).mean()
                 daily_df["ema200"] = daily_df["Close"].ewm(span=200).mean()
 
-                daily_idx_entry = daily_df.index.get_loc(entry_date, method="bfill")
+                # entry index bestimmen (ohne get_loc)
+                idx = daily_df.index.get_indexer([entry_date], method="bfill")[0]
+                daily_idx_entry = idx
 
+            # Nur wenn weekly-Date im daily-Index liegt
             if date <= daily_df.index[-1]:
+
                 j = daily_df.index.get_indexer([date], method="ffill")[0]
                 days_open = j - daily_idx_entry
 
                 if days_open <= 50:
-                    crit_ema = daily_df["ema200"].iloc[j]
+                    crit = daily_df["ema200"].iloc[j]
                 elif days_open <= 100:
-                    crit_ema = daily_df["ema100"].iloc[j]
+                    crit = daily_df["ema100"].iloc[j]
                 else:
-                    crit_ema = daily_df["ema50"].iloc[j]
+                    crit = daily_df["ema50"].iloc[j]
 
-                if daily_df["Close"].iloc[j] < crit_ema:
+                if daily_df["Close"].iloc[j] < crit:
 
                     exit_price = float(close[i])
                     ret_pct = (exit_price / entry_price - 1) * 100
@@ -188,6 +201,7 @@ def run_strategy(df, ticker):
                 position = True
                 entry_price = float(close[i])
                 entry_date = date
+
                 rows.append([ticker, "ENTRY", entry_date, entry_price, ""])
                 daily_df = None
 
@@ -200,6 +214,7 @@ def run_strategy(df, ticker):
         rows.append([ticker, "EXIT", EXIT_DATE, exit_price, ret_pct])
 
     return rows
+
 
 
 # ==========================================================
